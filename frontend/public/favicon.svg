@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="星瀑计价平台">
+  <rect width="64" height="64" rx="16" fill="#41bbc8"/>
+  <path d="M32 13l3.2 12.8L48 29l-12.8 3.2L32 45l-3.2-12.8L16 29l12.8-3.2L32 13z" fill="#fffdf5"/>
+  <path d="M20 48c4-3.5 8-3.5 12 0s8 3.5 12 0" fill="none" stroke="#d9f5f2" stroke-width="3" stroke-linecap="round"/>
+</svg>
