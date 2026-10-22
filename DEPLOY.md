@@ -1,6 +1,9 @@
 # 部署到阿里云 ECS
 
-本文按 **Ubuntu 22.04/24.04 + Docker Compose + 宿主机 Nginx** 的路线写。整套东西（PostgreSQL、FastAPI 后端、Vue 前端）都跑在 Docker 里，只有 Nginx 装在宿主机上负责 80/443 和 HTTPS。
+本文按 **Ubuntu 22.04/24.04 + Docker Compose + Nginx** 的路线写。整套东西（PostgreSQL、FastAPI 后端、Vue 前端）都跑在 Docker 里，Nginx 负责 80/443 和 HTTPS。
+
+- 仓库是公开的，服务器上可以直接 `https://` clone，不需要配 Deploy Key；以后改成私有仓库再用第 1 节的 Deploy Key 方式。
+- 如果机器上已经装了**宝塔面板**，直接看第 13 节，那一节按面板的操作习惯写，不用再装 Nginx/certbot。
 
 ## 0. 前置条件
 
@@ -207,3 +210,69 @@ docker compose ps
 - **数据库换阿里云 RDS**：把 `.env` 里的连接串改成 RDS 地址即可（同时删掉 compose 里的 db 服务）；
 - **图片放 OSS**：需要把上传接口改成 OSS SDK 或加一层反向代理，目前是本地卷 `pricing-data`；
 - **HTTPS 用阿里云证书**：在控制台申请证书后把 `.pem/.key` 放到 `/etc/nginx/cert/`，手写 443 server 块，效果和 certbot 一样。
+
+## 13. 已经装了宝塔面板的机器
+
+典型场景：Ubuntu 22.04、2 核 4G、面板已装、80/443 已被面板的 Nginx 占用。**不要重复装 Nginx/certbot**，用面板管理站点和证书即可，应用仍然跑 Docker。
+
+### 13.1 先收紧面板入口
+
+- 面板默认 **8888** 端口不要对公网开放：阿里云安全组里把 8888 的来源限制成你的固定 IP；或者面板「设置 → 面板SSL/授权IP」里只允许自己的 IP；
+- 面板密码换成强密码，开启面板 SSL；
+- 安全组只保留：22（限你的 IP）、80、443，其余全部删除；
+- 面板里自带的 MySQL/PHP 与本项目无关，不要用它们跑本项目，避免环境不一致。
+
+### 13.2 用面板终端执行（root）
+
+面板左侧「终端」打开即可，不需要额外配 SSH。
+
+```bash
+# 1) Docker（面板左侧 Docker 菜单已安装就跳过）
+docker --version || curl -fsSL https://get.docker.com | bash
+
+# 2) 拉代码（仓库公开，直接 HTTPS）
+mkdir -p /www/wwwroot && cd /www/wwwroot
+git clone https://github.com/gaoxinlin12138/Pricing-system.git pricing
+cd pricing
+
+# 3) 生产配置
+cp .env.production.example .env
+openssl rand -hex 32      # 复制输出，填到 SESSION_SECRET
+nano .env                 # 改 POSTGRES_PASSWORD、SESSION_SECRET、两个 INITIAL_*_PASSWORD
+
+# 4) 启动（2C4G 足够，不需要加 swap）
+docker compose up -d --build
+docker compose ps
+curl -I http://127.0.0.1:8080
+```
+
+`docker compose logs -f backend` 看到 Uvicorn running、且 `curl` 返回 200 就说明应用起来了。
+
+### 13.3 面板里加站点和反向代理
+
+1. 「网站」→ 添加站点：域名填你的域名，PHP 选「纯静态」，不要创建数据库；
+2. 点进该站点 → 「反向代理」→ 添加反向代理：
+   - 目标 URL：`http://127.0.0.1:8080`
+   - 发送域名：`$host`
+   - 缓存：关闭
+3. 「SSL」→ Let's Encrypt → 申请证书 → 开启「强制 HTTPS」；
+4. 回到 `/www/wwwroot/pricing/.env`，把 `COOKIE_SECURE=true`，执行 `docker compose up -d backend`。
+
+> 反向代理必须是**整站代理**（`/` → 127.0.0.1:8080），不要只代理 `/api`；否则前端页面能开、图片和接口会 404。
+
+### 13.4 没有域名/还没备案时
+
+- 临时在安全组放行 **8080**，来源填你自己的公网 IP（不要 0.0.0.0/0），访问 `http://47.114.53.128:8080` 验收；验收完把这条规则删掉；
+- 或者用 SSH 隧道：`ssh -L 8080:127.0.0.1:8080 root@47.114.53.128`，本地浏览器打开 `http://127.0.0.1:8080`。
+
+### 13.5 面板里做备份计划任务
+
+面板「计划任务」→ Shell 脚本，每天执行：
+
+```bash
+cd /www/wwwroot/pricing
+docker compose exec -T db pg_dump -U pricing pricing | gzip > /www/backup/pricing-$(date +\%F).sql.gz
+docker run --rm -v pricing_pricing-data:/data -v /www/backup:/backup alpine tar czf /backup/uploads-$(date +\%F).tgz -C /data uploads
+```
+
+（`/www/backup` 先建好；卷名以 `docker volume ls` 里实际显示的 `pricing_pricing-data` 为准。）
