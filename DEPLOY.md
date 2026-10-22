@@ -278,3 +278,168 @@ docker run --rm -v pricing_pricing-data:/data -v /www/backup:/backup alpine tar 
 ```
 
 （`/www/backup` 先建好；卷名以 `docker volume ls` 里实际显示的 `pricing_pricing-data` 为准。）
+
+## 14. 不用 Docker：系统服务 + 宝塔 Nginx
+
+适用：不想装 Docker，机器上已经有宝塔面板（自带 Nginx），系统是 Ubuntu 22.04。架构变成：
+
+- PostgreSQL 装在系统里，只监听 `127.0.0.1:5432`；
+- 后端用 venv + systemd 常驻，监听 `127.0.0.1:8001`；
+- 前端 `npm run build` 出静态文件，宝塔站点指向 `frontend/dist`，`/api`、`/uploads` 反代到 8001。
+
+> 下面第 1 步里生成的数据库密码只存在当前终端变量里，**请把 1～4 步在同一个终端会话里连续执行完**；中途断了就重新生成密码并同步改环境文件。
+
+### 14.1 安装 PostgreSQL 并建库
+
+```bash
+apt-get update
+apt-get install -y postgresql postgresql-contrib
+systemctl enable --now postgresql
+
+DB_PASS=$(openssl rand -hex 12)
+sudo -u postgres psql -c "CREATE USER pricing WITH PASSWORD '$DB_PASS';"
+sudo -u postgres psql -c "CREATE DATABASE pricing OWNER pricing;"
+echo "数据库密码（记下来）：$DB_PASS"
+
+# 只监听本机，确认没有对公网开放
+ss -lntp | grep 5432
+```
+
+### 14.2 后端：虚拟环境 + 依赖
+
+```bash
+apt-get install -y python3 python3-venv python3-pip
+cd /www/wwwroot/pricing/backend
+python3 -m venv .venv
+.venv/bin/pip install -i https://mirrors.aliyun.com/pypi/simple/ --upgrade pip
+.venv/bin/pip install -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
+```
+
+> Ubuntu 22.04 自带 Python 3.10，本项目兼容；如果以后依赖升级要求 3.11+，再换 Python 版本。
+
+### 14.3 前端：Node + 构建
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt-get install -y nodejs
+node -v && npm -v
+
+cd /www/wwwroot/pricing/frontend
+npm ci --registry=https://registry.npmmirror.com
+npm run build
+ls -1 dist | head
+```
+
+### 14.4 后端环境文件
+
+```bash
+mkdir -p /etc/pricing /www/wwwroot/pricing/backend/uploads
+
+cat > /etc/pricing/pricing.env <<EOF
+DATABASE_URL=postgresql+psycopg://pricing:$DB_PASS@127.0.0.1:5432/pricing
+SESSION_SECRET=$(openssl rand -hex 32)
+COOKIE_SECURE=false
+UPLOAD_DIR=/www/wwwroot/pricing/backend/uploads
+INITIAL_ADMIN_PASSWORD=$(openssl rand -hex 8)
+INITIAL_EMPLOYEE_PASSWORD=$(openssl rand -hex 8)
+EOF
+
+chmod 600 /etc/pricing/pricing.env
+chown -R www:www /www/wwwroot/pricing/backend/uploads
+cat /etc/pricing/pricing.env    # 复制保存，尤其两个 INITIAL_* 密码
+```
+
+### 14.5 数据库迁移（只需在每次更新后执行）
+
+```bash
+cd /www/wwwroot/pricing/backend
+set -a; . /etc/pricing/pricing.env; set +a
+.venv/bin/python -m alembic -c alembic.ini upgrade head
+```
+
+### 14.6 systemd 常驻后端
+
+```bash
+cat > /etc/systemd/system/pricing.service <<'EOF'
+[Unit]
+Description=Pricing backend
+After=network.target postgresql.service
+
+[Service]
+User=www
+Group=www
+WorkingDirectory=/www/wwwroot/pricing/backend
+EnvironmentFile=/etc/pricing/pricing.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/www/wwwroot/pricing/backend/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8001
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now pricing
+systemctl status pricing --no-pager
+curl -I http://127.0.0.1:8001/openapi.json
+```
+
+`curl` 返回 200、`systemctl status` 是 `active (running)` 就成功了。看日志：`journalctl -u pricing -f`。
+
+### 14.7 宝塔站点：静态 + 反向代理
+
+1. 「网站」→ 添加站点：域名填你的域名，PHP 选「纯静态」，根目录改成 `/www/wwwroot/pricing/frontend/dist`，不要创建数据库；
+2. 站点设置 →「反向代理」→ 添加两条：
+   - 代理目录 `/api`，目标 URL `http://127.0.0.1:8001`，发送域名 `$host`；
+   - 代理目录 `/uploads`，目标 URL `http://127.0.0.1:8001`，发送域名 `$host`；
+3. 「SSL」→ Let's Encrypt 申请证书 → 开启「强制 HTTPS」；
+4. 把 `/etc/pricing/pricing.env` 里的 `COOKIE_SECURE` 改成 `true`，执行 `systemctl restart pricing`。
+
+> 如果面板版本没有「代理目录」，就打开站点「配置文件」，在 `server { ... }` 里加：
+>
+> ```nginx
+> location /api/     { proxy_pass http://127.0.0.1:8001; proxy_set_header Host $host; }
+> location /uploads/ { proxy_pass http://127.0.0.1:8001; proxy_set_header Host $host; }
+> ```
+>
+> 并确认 `location /` 里有 `try_files $uri $uri/ /index.html;`（前端是单页应用，刷新子路由要靠它）。
+
+### 14.8 更新代码
+
+```bash
+cd /www/wwwroot/pricing
+git pull
+backend/.venv/bin/pip install -i https://mirrors.aliyun.com/pypi/simple/ -r backend/requirements.txt
+cd frontend && npm ci --registry=https://registry.npmmirror.com && npm run build && cd ..
+cd backend
+set -a; . /etc/pricing/pricing.env; set +a
+.venv/bin/python -m alembic -c alembic.ini upgrade head
+systemctl restart pricing
+```
+
+### 14.9 备份（系统 PostgreSQL 版）
+
+```bash
+mkdir -p /www/backup
+PGPASSWORD='你的数据库密码' pg_dump -h 127.0.0.1 -U pricing pricing | gzip > /www/backup/pricing-$(date +%F).sql.gz
+tar czf /www/backup/uploads-$(date +%F).tgz -C /www/wwwroot/pricing/backend uploads
+```
+
+放进宝塔「计划任务」每天跑即可。恢复：
+
+```bash
+gunzip -c /www/backup/pricing-2026-10-22.sql.gz | PGPASSWORD='密码' psql -h 127.0.0.1 -U pricing -d pricing
+tar xzf /www/backup/uploads-2026-10-22.tgz -C /www/wwwroot/pricing/backend
+```
+
+### 14.10 常见问题
+
+| 现象 | 处理 |
+|---|---|
+| `systemctl status` 里 exit 1 | `journalctl -u pricing -n 80` 看 Python 报错，多半是 DATABASE_URL 或依赖没装全 |
+| 502 Bad Gateway | 后端没起来或端口不是 8001，`curl -I 127.0.0.1:8001/openapi.json` 验证 |
+| 页面能开、接口 404 | 宝塔只配了静态没配 `/api` 反代，或反代路径写成了 `/api/` 与 `/api` 不一致 |
+| 登录后立刻变回登录页 | `COOKIE_SECURE` 与访问协议不一致 |
+| 图片 403/404 | `backend/uploads` 权限不是 `www:www`，或 `/uploads` 反代没配 |
+| 刷新子页面 404 | 站点 `location /` 缺 `try_files ... /index.html` |
