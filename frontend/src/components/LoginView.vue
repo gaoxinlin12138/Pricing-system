@@ -67,11 +67,6 @@ async function submit() {
         </button>
 
         <p v-if="error" class="form-error">{{ error }}</p>
-
-        <p class="demo-hint">
-          演示账号：员工 <b>employee / employee123</b><br />
-          管理员 <b>admin / admin123</b>
-        </p>
       </form>
     </section>
   </div>

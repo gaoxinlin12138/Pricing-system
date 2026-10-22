@@ -560,9 +560,11 @@ def cleanup_orphan_uploads(db: Session) -> int:
 def seed_if_empty(db: Session) -> None:
     if db.scalar(select(User.id).limit(1)):
         return
-    # 部署时可用环境变量指定首次登录密码，避免上线后还留着演示账号密码。
+    # 部署时用环境变量指定首次登录密码；未设置时的内置密码只用于本地开发。
     admin_password = os.getenv("INITIAL_ADMIN_PASSWORD") or "admin123"
     employee_password = os.getenv("INITIAL_EMPLOYEE_PASSWORD") or "employee123"
+    if not os.getenv("INITIAL_ADMIN_PASSWORD"):
+        print("警告：未设置 INITIAL_ADMIN_PASSWORD，正在使用内置默认密码，仅限本地开发，请登录后立即修改。", flush=True)
     db.add_all([User(username="admin", password_hash=hash_password(admin_password), role="admin"), User(username="employee", password_hash=hash_password(employee_password), role="employee")])
     db.add(PricingSettings(id=1, multiplier=Decimal("1.5"), labor_fee=Decimal("80"), tax_rate=Decimal("0.13"), freight=Decimal("30"), quote_valid_days=15, max_discount_percent=Decimal("0.20"), minimum_price=Decimal("0")))
     bodies = [Body(name="星瀑花洒主体", model="SH-001", description="304不锈钢主体，适配多种出水组合", cost=Decimal("680")), Body(name="雾幕花洒主体", model="SH-002", description="圆润极简主体，适合现代卫浴空间", cost=Decimal("520"))]

@@ -93,6 +93,8 @@ INITIAL_EMPLOYEE_PASSWORD=<员工初始密码>
 
 `.env` 已在 `.gitignore` 里，不会被提交；数据库密码故意只用字母数字，避免 URL 编码问题。
 
+> 注意：`docker-compose.yml` 里这两个 `INITIAL_*_PASSWORD` 没有默认值，不填会直接启动失败，这是故意的——避免用演示密码上线。`INITIAL_*` 只在**空库首次启动**时生效，之后改它不会改已有账号密码，要改密码请登录后台操作。
+
 ## 5. 启动
 
 ```bash

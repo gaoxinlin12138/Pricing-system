@@ -44,10 +44,7 @@ npm run dev
 
 打开 `http://localhost:5173`。
 
-演示账号：
-
-- 员工：`employee` / `employee123`
-- 管理员：`admin` / `admin123`
+登录账号在首次启动（空库）时创建，由环境变量 `INITIAL_ADMIN_PASSWORD` / `INITIAL_EMPLOYEE_PASSWORD` 决定；本地不带这两个变量时会使用内置默认密码，生产部署务必在 `.env` 里显式设置（见 [DEPLOY.md](DEPLOY.md)）。
 
 ## Docker 部署
 

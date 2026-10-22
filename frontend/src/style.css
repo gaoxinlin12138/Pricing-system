@@ -235,7 +235,6 @@ select.input { padding-right: 6px; }
 .login-card .field + .field { margin-top: 16px; }
 .login-card .btn { margin-top: 24px; }
 .form-error { margin-top: 16px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--danger-soft); color: var(--danger); font-size: 13px; }
-.demo-hint { margin-top: 24px; padding-top: 16px; border-top: 1px dashed var(--line); color: var(--muted); font-size: 12.5px; line-height: 1.8; }
 
 @media (max-width: 960px) {
   .login { grid-template-columns: 1fr; }
