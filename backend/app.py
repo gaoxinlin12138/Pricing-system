@@ -167,7 +167,9 @@ class Bundle(Base):
     __tablename__ = "bundles"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(160))
+    code: Mapped[str] = mapped_column(String(80), default="")
     description: Mapped[str] = mapped_column(Text, default="")
+    image_url: Mapped[str] = mapped_column(String(500), default="")
     body_id: Mapped[int] = mapped_column(ForeignKey("bodies.id", ondelete="RESTRICT"), index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
@@ -291,7 +293,9 @@ class BundleItemIn(BaseModel):
 
 class BundleIn(BaseModel):
     name: str = Field(min_length=1, max_length=160)
+    code: str = Field(default="", max_length=80)
     description: str = ""
+    image_url: str = ""
     body_id: int
     active: bool = True
     items: list[BundleItemIn] = Field(min_length=1)
@@ -385,7 +389,9 @@ def private_bundle(db: Session, bundle: Bundle) -> dict[str, Any]:
     return {
         "id": bundle.id,
         "name": bundle.name,
+        "code": bundle.code or "",
         "description": bundle.description or "",
+        "image_url": bundle.image_url or "",
         "active": bundle.active,
         "version": bundle.version,
         "updated_at": bundle.updated_at.isoformat(),
@@ -401,7 +407,9 @@ def public_bundle(db: Session, bundle: Bundle, *, include_replacements: bool = F
     result: dict[str, Any] = {
         "id": bundle.id,
         "name": bundle.name,
+        "code": bundle.code or "",
         "description": bundle.description or "",
+        "image_url": bundle.image_url or "",
         "version": bundle.version,
         "body": public_body(body) if body else None,
         "items": [{"id": i.id, "accessory": public_accessory(accessories[i.accessory_id]), "quantity": str(i.quantity), "position": i.position} for i in items if i.accessory_id in accessories],
@@ -521,7 +529,8 @@ def remove_uploaded_file(image_url: str | None, db: Session | None = None) -> bo
     if db is not None:
         body_urls = db.scalars(select(Body.image_url).where(Body.image_url != "")).all()
         accessory_urls = db.scalars(select(Accessory.image_url).where(Accessory.image_url != "")).all()
-        if any(upload_filename(url) == name for url in [*body_urls, *accessory_urls]):
+        bundle_urls = db.scalars(select(Bundle.image_url).where(Bundle.image_url != "")).all()
+        if any(upload_filename(url) == name for url in [*body_urls, *accessory_urls, *bundle_urls]):
             return False
     root = UPLOAD_DIR.resolve()
     target = (root / name).resolve()
@@ -536,7 +545,7 @@ def remove_uploaded_file(image_url: str | None, db: Session | None = None) -> bo
 
 def cleanup_orphan_uploads(db: Session) -> int:
     """Remove files in the upload directory that no catalog record references."""
-    referenced={upload_filename(url) for url in [*db.scalars(select(Body.image_url).where(Body.image_url != "")).all(),*db.scalars(select(Accessory.image_url).where(Accessory.image_url != "")).all()]}
+    referenced={upload_filename(url) for url in [*db.scalars(select(Body.image_url).where(Body.image_url != "")).all(),*db.scalars(select(Accessory.image_url).where(Accessory.image_url != "")).all(),*db.scalars(select(Bundle.image_url).where(Bundle.image_url != "")).all()]}
     removed=0
     for path in UPLOAD_DIR.iterdir():
         if path.is_file() and path.name not in referenced:
@@ -551,7 +560,10 @@ def cleanup_orphan_uploads(db: Session) -> int:
 def seed_if_empty(db: Session) -> None:
     if db.scalar(select(User.id).limit(1)):
         return
-    db.add_all([User(username="admin", password_hash=hash_password("admin123"), role="admin"), User(username="employee", password_hash=hash_password("employee123"), role="employee")])
+    # 部署时可用环境变量指定首次登录密码，避免上线后还留着演示账号密码。
+    admin_password = os.getenv("INITIAL_ADMIN_PASSWORD") or "admin123"
+    employee_password = os.getenv("INITIAL_EMPLOYEE_PASSWORD") or "employee123"
+    db.add_all([User(username="admin", password_hash=hash_password(admin_password), role="admin"), User(username="employee", password_hash=hash_password(employee_password), role="employee")])
     db.add(PricingSettings(id=1, multiplier=Decimal("1.5"), labor_fee=Decimal("80"), tax_rate=Decimal("0.13"), freight=Decimal("30"), quote_valid_days=15, max_discount_percent=Decimal("0.20"), minimum_price=Decimal("0")))
     bodies = [Body(name="星瀑花洒主体", model="SH-001", description="304不锈钢主体，适配多种出水组合", cost=Decimal("680")), Body(name="雾幕花洒主体", model="SH-002", description="圆润极简主体，适合现代卫浴空间", cost=Decimal("520"))]
     db.add_all(bodies)
@@ -624,7 +636,7 @@ def catalog_bundles(q: str = "", _: User = Depends(current_user), db: Session = 
         haystack = " ".join([bundle.name, bundle.description or "", body.name if body else "", body.model if body else "", *[f"{x.name} {x.model}" for x in accessories if x]])
         if needle and needle not in haystack.lower():
             continue
-        result.append({"id": bundle.id, "name": bundle.name, "description": bundle.description or "", "version": bundle.version, "body": public_body(body) if body else None, "item_count": len(item_rows)})
+        result.append({"id": bundle.id, "name": bundle.name, "code": bundle.code or "", "description": bundle.description or "", "image_url": bundle.image_url or "", "version": bundle.version, "body": public_body(body) if body else None, "item_count": len(item_rows)})
     return result
 
 
@@ -701,7 +713,7 @@ def calculate_bundle(payload: BundleQuoteIn, db: Session, private: bool = False)
     result = calculate(QuoteIn(body_id=body.id, lines=legacy_lines, discount_type=payload.discount_type, discount_value=payload.discount_value), db, private=private)
     for result_line, source_line in zip(result.get("lines", []), payload.lines):
         result_line["bundle_item_id"] = source_line.bundle_item_id
-    result["bundle"] = {"id": bundle.id, "name": bundle.name, "version": bundle.version, "description": bundle.description or ""}
+    result["bundle"] = {"id": bundle.id, "name": bundle.name, "code": bundle.code or "", "version": bundle.version, "description": bundle.description or "", "image_url": bundle.image_url or ""}
     result["original_bundle_items"] = original_items
     result["replacements"] = replacements
     if private:
@@ -750,7 +762,25 @@ def public_quote(quote: Quote) -> dict[str, Any]:
 
 @app.get("/api/quotes")
 def list_quotes(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    return [{"quote_no":x.quote_no,"created_at":x.created_at.isoformat(),"valid_until":x.valid_until.isoformat(),"status":quote_status(x),"final_price":str(x.final_price)} for x in db.scalars(select(Quote).where(Quote.created_by==user.id).order_by(Quote.id.desc())).all()]
+    rows = db.scalars(select(Quote).where(Quote.created_by==user.id).order_by(Quote.id.desc())).all()
+    return [{**_quote_summary(x)} for x in rows]
+
+
+def _quote_summary(quote: Quote) -> dict[str, Any]:
+    """报价列表只回传摘要；套装名与替换次数来自保存时的快照，原套装被改动也不受影响。"""
+    snapshot = quote.snapshot or {}
+    bundle = snapshot.get("bundle") or {}
+    body = snapshot.get("body") or {}
+    return {
+        "quote_no": quote.quote_no,
+        "created_at": quote.created_at.isoformat(),
+        "valid_until": quote.valid_until.isoformat(),
+        "status": quote_status(quote),
+        "final_price": str(quote.final_price),
+        "bundle_name": bundle.get("name") or "",
+        "body_name": body.get("name") or "",
+        "replacement_count": len(snapshot.get("replacements") or []),
+    }
 
 
 @app.get("/api/quotes/{quote_no}")
@@ -792,14 +822,24 @@ def admin_bundles(_: User = Depends(admin_user), db: Session = Depends(get_db)):
 
 def save_bundle(bundle: Bundle, payload: BundleIn, user: User, db: Session, action: str) -> dict[str, Any]:
     body, accessories = validate_bundle_payload(payload, db, bundle.id if bundle.id else None)
-    bundle.name = payload.name.strip(); bundle.description = payload.description.strip(); bundle.body_id = body.id; bundle.active = payload.active; bundle.version = (bundle.version or 0) + (1 if action == "update" else 0); bundle.updated_at = now()
+    old_image_url = bundle.image_url
+    bundle.name = payload.name.strip()
+    bundle.code = payload.code.strip()
+    bundle.description = payload.description.strip()
+    bundle.image_url = payload.image_url.strip()
+    bundle.body_id = body.id
+    bundle.active = payload.active
+    bundle.version = (bundle.version or 0) + (1 if action == "update" else 0)
+    bundle.updated_at = now()
     if action == "create":
         db.add(bundle); db.flush()
     db.query(BundleItem).filter(BundleItem.bundle_id == bundle.id).delete(synchronize_session=False)
     for item in payload.items:
         db.add(BundleItem(bundle_id=bundle.id, accessory_id=item.accessory_id, quantity=item.quantity, position=item.position))
-    audit(db, user, action, "bundle", str(bundle.id), {"name": bundle.name, "body_id": bundle.body_id, "items": [item.model_dump() for item in payload.items], "active": bundle.active})
+    audit(db, user, action, "bundle", str(bundle.id), {"name": bundle.name, "code": bundle.code, "body_id": bundle.body_id, "image_url": bundle.image_url, "items": [item.model_dump() for item in payload.items], "active": bundle.active})
     db.commit(); db.refresh(bundle)
+    if old_image_url and old_image_url != bundle.image_url:
+        remove_uploaded_file(old_image_url, db)
     return private_bundle(db, bundle)
 
 
@@ -820,10 +860,12 @@ def delete_bundle(bundle_id: int, user: User = Depends(admin_user), db: Session 
     bundle = db.get(Bundle, bundle_id)
     if not bundle: raise HTTPException(404, "套装不存在")
     label = bundle.name
+    old_image_url = bundle.image_url
     mark_target_deleted(db, "bundle", str(bundle.id), label)
     audit(db, user, "delete", "bundle", str(bundle.id), {"name": bundle.name}, target_label=label, target_deleted=True)
     db.query(BundleItem).filter(BundleItem.bundle_id == bundle.id).delete(synchronize_session=False)
     db.delete(bundle); db.commit()
+    remove_uploaded_file(old_image_url, db)
     return {"ok": True, "deleted": True, "id": bundle_id}
 
 
@@ -954,7 +996,8 @@ def delete_user(user_id:int,user:User=Depends(admin_user),db:Session=Depends(get
 
 @app.get("/api/admin/quotes")
 def admin_quotes(_:User=Depends(admin_user),db:Session=Depends(get_db)):
-    users={x.id:x.username for x in db.scalars(select(User)).all()}; return [{"quote_no":x.quote_no,"created_at":x.created_at.isoformat(),"valid_until":x.valid_until.isoformat(),"status":quote_status(x),"final_price":str(x.final_price),"username":x.created_by_name_snapshot or users.get(x.created_by) or "已删除账号"} for x in db.scalars(select(Quote).order_by(Quote.id.desc())).all()]
+    users={x.id:x.username for x in db.scalars(select(User)).all()}
+    return [{**_quote_summary(x),"username":x.created_by_name_snapshot or users.get(x.created_by) or "已删除账号"} for x in db.scalars(select(Quote).order_by(Quote.id.desc())).all()]
 
 
 @app.get("/api/admin/quotes/{quote_no}")
@@ -984,7 +1027,7 @@ def delete_quote(quote_no:str,user:User=Depends(admin_user),db:Session=Depends(g
 def audit_logs(_:User=Depends(admin_user),db:Session=Depends(get_db)):
     users={x.id:x.username for x in db.scalars(select(User)).all()}
     actions={"create":"新增","update":"修改","delete":"删除","void":"作废","replace":"替换配件","upload":"上传","test":"试算","login":"登录","logout":"退出"}
-    targets={"user":"账号","settings":"计价参数","body":"主体","accessory":"配件","bundle":"套装","compatibility_rule":"兼容规则","quote":"报价单","image":"图片","pricing":"计价试算","session":"会话"}
+    targets={"user":"账号","settings":"计价参数","body":"主体","accessory":"配件","bundle":"套装","quote":"报价单","image":"图片","pricing":"计价试算","session":"会话"}
     return [{"id":x.id,"username":x.actor_name_snapshot or users.get(x.actor_id) or "已删除账号","action":x.action,"action_label":actions.get(x.action,x.action),"target_type":x.target_type,"target_type_label":targets.get(x.target_type,x.target_type),"target_id":x.target_id,"target_label":x.target_label,"target_deleted":x.target_deleted,"detail":x.detail,"created_at":x.created_at.isoformat()} for x in db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(200)).all()]
 
 
@@ -1020,9 +1063,9 @@ def delete_upload(filename:str,user:User=Depends(admin_user),db:Session=Depends(
     name=upload_filename(f"/uploads/{filename}")
     if not name or name != filename:
         raise HTTPException(400,"无效的图片文件名")
-    image_urls=[*db.scalars(select(Body.image_url).where(Body.image_url!="")).all(),*db.scalars(select(Accessory.image_url).where(Accessory.image_url!="")).all()]
+    image_urls=[*db.scalars(select(Body.image_url).where(Body.image_url!="")).all(),*db.scalars(select(Accessory.image_url).where(Accessory.image_url!="")).all(),*db.scalars(select(Bundle.image_url).where(Bundle.image_url!="")).all()]
     if any(upload_filename(url)==name for url in image_urls):
-        raise HTTPException(409,"图片仍被主体或配件使用，不能删除")
+        raise HTTPException(409,"图片仍被主体、配件或套装使用，不能删除")
     deleted=remove_uploaded_file(f"/uploads/{name}")
     if deleted:
         mark_target_deleted(db,"image",name,name)

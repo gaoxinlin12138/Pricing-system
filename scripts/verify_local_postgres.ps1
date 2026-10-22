@@ -5,10 +5,10 @@ param(
     [string]$Database = 'postgres'
 )
 
-$psql = 'D:\LenovoSoftstore\Install\PostgreSQL\bin\psql.exe'
-if (-not (Test-Path -LiteralPath $psql)) {
-    throw ('psql not found: ' + $psql)
-}
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'Resolve-Psql.ps1')
+
+$psql = Resolve-PsqlPath
 
 Write-Host ('Connecting to PostgreSQL ' + $ServerHost + ':' + $Port + '/' + $Database + '. Enter the password only at the psql prompt.')
 & $psql -h $ServerHost -p $Port -U $User -d $Database -W -c 'SELECT current_user, current_database(), version();'

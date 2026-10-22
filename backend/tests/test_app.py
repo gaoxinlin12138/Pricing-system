@@ -137,6 +137,38 @@ def test_current_admin_cannot_be_deleted():
     assert response.json()["message"] == "不能删除当前登录账号"
 
 
+def test_bundle_cover_image_survives_orphan_cleanup():
+    from app import SessionLocal, cleanup_orphan_uploads
+
+    admin = admin_client()
+    body_id, accessory_id = catalog_for_quote(admin)
+    image = TEST_UPLOAD_DIR / "bundle-cover.png"
+    image.write_bytes(b"cover")
+    image_url = "/uploads/bundle-cover.png"
+
+    bundle = admin.post(
+        "/api/admin/bundles",
+        json={
+            "name": "封面套装",
+            "code": "COVER-1",
+            "description": "",
+            "image_url": image_url,
+            "body_id": body_id,
+            "active": True,
+            "items": [{"accessory_id": accessory_id, "quantity": 1, "position": 1}],
+        },
+    ).json()
+    assert bundle["image_url"] == image_url
+    assert bundle["code"] == "COVER-1"
+
+    with SessionLocal() as db:
+        cleanup_orphan_uploads(db)
+    assert image.exists(), "套装封面不应被当作孤儿文件清理"
+
+    assert admin.delete(f"/api/admin/bundles/{bundle['id']}").status_code == 200
+    assert not image.exists(), "删除套装后应清理其封面文件"
+
+
 def test_shared_upload_is_removed_only_after_last_reference():
     admin = admin_client()
     image = TEST_UPLOAD_DIR / "shared.png"

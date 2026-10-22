@@ -1,57 +1,73 @@
 <script setup lang="ts">
-import { computed, reactive, ref, onMounted } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { api, type Session } from './api'
+import AdminView from './components/AdminView.vue'
+import EmployeeView from './components/EmployeeView.vue'
+import LoginView from './components/LoginView.vue'
+import ToastStack from './components/ToastStack.vue'
+import { toast } from './ui/toast'
 
-type Session={username:string;role:'admin'|'employee'}
-type Body={id:number;name:string;model:string;description:string;image_url:string;cost?:string;active?:boolean}
-type Accessory={id:number;name:string;model:string;category:string;image_url:string;attributes:Record<string,string>;min_qty:string;max_qty:string;cost?:string;active?:boolean}
-type Bundle={id:number;name:string;description:string;version:number;active?:boolean;body:any;items:any[];item_count?:number;replacement_candidates?:Record<string,Accessory[]>}
-const api=async(path:string,options:RequestInit={})=>{const response=await fetch(path,{credentials:'include',headers:{...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),...(options.headers||{})},...options});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.message||data.detail||'请求失败');return data}
-const session=ref<Session|null>(null),loginForm=reactive({username:'',password:''}),loginError=ref(''),notice=ref(''),busy=ref(false)
-const bundles=ref<Bundle[]>([]),bundleQuery=ref(''),selectedBundle=ref<Bundle|null>(null),employeeStep=ref(1),replacementItemId=ref<number|null>(null),discountType=ref<'percent'|'amount'>('percent'),discountValue=ref(0),draft=reactive<Record<number,{accessory_id:number;quantity:number}>>({}),preview=ref<any>(null),quotes=ref<any[]>([]),quoteDetail=ref<any>(null)
-const adminTab=ref('概览'),adminBodies=ref<Body[]>([]),adminAccessories=ref<Accessory[]>([]),adminBundles=ref<Bundle[]>([]),adminQuotes=ref<any[]>([]),users=ref<any[]>([]),logs=ref<any[]>([]),settings=reactive({multiplier:1,labor_fee:0,tax_rate_percent:0,freight:0,quote_valid_days:15,max_discount_percent:20,minimum_price:0})
-const editor=ref<'body'|'accessory'|'bundle'|'user'|''>(''),bodyForm=reactive<any>({id:0,name:'',model:'',description:'',image_url:'',cost:0,active:true}),accessoryForm=reactive<any>({id:0,name:'',model:'',category:'',image_url:'',attributes:{},cost:0,min_qty:0,max_qty:1,default_qty:1,active:true}),bundleForm=reactive<any>({id:0,name:'',description:'',body_id:0,active:true,items:[]}),userForm=reactive<any>({id:0,username:'',password:'',role:'employee',active:true}),selectedLog=ref<any>(null)
-const filteredBundles=computed(()=>bundles.value.filter(x=>`${x.name}${x.description}${x.body?.name||''}${x.body?.model||''}${(x.items||[]).map((i:any)=>i.accessory.name+i.accessory.model).join('')}`.toLowerCase().includes(bundleQuery.value.toLowerCase())))
-const selectedItems=computed(()=>selectedBundle.value?.items?.map((item:any)=>{const replacement=(selectedBundle.value?.replacement_candidates?.[item.accessory.category]||[]).find(x=>x.id===draft[item.id]?.accessory_id);return {...item,accessory:replacement||item.accessory,quantity:draft[item.id]?.quantity??Number(item.quantity)}})||[])
-const activeBodyCount=computed(()=>adminBodies.value.filter(x=>x.active).length),activeAccessoryCount=computed(()=>adminAccessories.value.filter(x=>x.active).length)
-async function loadEmployee(){bundles.value=await api('/api/catalog/bundles');quotes.value=await api('/api/quotes')}
-async function loadAdmin(){Object.assign(settings,await api('/api/admin/pricing-settings'));adminBodies.value=await api('/api/admin/bodies');adminAccessories.value=await api('/api/admin/accessories');adminBundles.value=await api('/api/admin/bundles');adminQuotes.value=await api('/api/admin/quotes');users.value=await api('/api/admin/users');logs.value=await api('/api/admin/audit-logs')}
-async function login(){try{session.value=await api('/api/auth/login',{method:'POST',body:JSON.stringify(loginForm)});if(session.value.role==='admin')await loadAdmin();else await loadEmployee()}catch(e:any){loginError.value=e.message}}
-async function logout(){await api('/api/auth/logout',{method:'POST'});session.value=null}
-async function chooseBundle(bundle:Bundle){selectedBundle.value=await api(`/api/catalog/bundles/${bundle.id}`);Object.keys(draft).forEach(k=>delete draft[Number(k)]);selectedBundle.value.items.forEach((item:any)=>draft[item.id]={accessory_id:item.accessory.id,quantity:Number(item.quantity)});preview.value=null;employeeStep.value=2}
-function replace(item:any,a:Accessory){draft[item.id]={accessory_id:a.id,quantity:Math.min(Number(a.max_qty),Math.max(Number(a.min_qty),draft[item.id]?.quantity||Number(item.quantity)))};replacementItemId.value=null;preview.value=null}
-function restore(item:any){draft[item.id]={accessory_id:item.accessory.id,quantity:draft[item.id]?.quantity||Number(item.quantity)};preview.value=null}
-async function calculate(save=false){if(!selectedBundle.value)return;busy.value=true;try{const payload={bundle_id:selectedBundle.value.id,lines:selectedBundle.value.items.map((item:any)=>({bundle_item_id:item.id,accessory_id:draft[item.id].accessory_id,quantity:draft[item.id].quantity})),discount_type:discountType.value,discount_value:discountType.value==='percent'?Number(discountValue.value)/100:Number(discountValue.value)};preview.value=await api(save?'/api/quotes':'/api/quotes/preview',{method:'POST',body:JSON.stringify(payload)});employeeStep.value=3;if(save){notice.value=`报价 ${preview.value.quote_no} 已保存`;quotes.value=await api('/api/quotes')}}catch(e:any){notice.value=e.message}finally{busy.value=false}}
-async function openQuote(no:string){quoteDetail.value=await api(`/api/quotes/${no}`)}
-function clearEditor(){editor.value='';Object.assign(bodyForm,{id:0,name:'',model:'',description:'',image_url:'',cost:0,active:true});Object.assign(accessoryForm,{id:0,name:'',model:'',category:'',image_url:'',attributes:{},cost:0,min_qty:0,max_qty:1,default_qty:1,active:true});Object.assign(bundleForm,{id:0,name:'',description:'',body_id:0,active:true,items:[]});Object.assign(userForm,{id:0,username:'',password:'',role:'employee',active:true})}
-async function saveEntity(kind:string){try{const form=kind==='body'?bodyForm:kind==='accessory'?accessoryForm:kind==='bundle'?bundleForm:userForm;const path=kind==='body'?'bodies':kind==='accessory'?'accessories':kind==='bundle'?'bundles':'users';const method=form.id?'PATCH':'POST';await api(`/api/admin/${path}${form.id?'/'+form.id:''}`,{method,body:JSON.stringify({...form,cost:Number(form.cost),items:kind==='bundle'?form.items.map((x:any,i:number)=>({...x,position:i+1,quantity:Number(x.quantity)})):undefined})});notice.value='已保存';clearEditor();await loadAdmin()}catch(e:any){notice.value=e.message}}
-function edit(kind:string,item:any){editor.value=kind as any;if(kind==='body')Object.assign(bodyForm,{...item,cost:Number(item.cost||0)});if(kind==='accessory')Object.assign(accessoryForm,{...item,cost:Number(item.cost||0),attributes:item.attributes||{}});if(kind==='bundle')Object.assign(bundleForm,{id:item.id,name:item.name,description:item.description||'',body_id:item.body?.id,active:item.active,items:(item.items||[]).map((x:any)=>({accessory_id:x.accessory.id,quantity:Number(x.quantity),position:x.position}))});if(kind==='user')Object.assign(userForm,{...item,password:''})}
-async function removeEntity(kind:string,item:any){if(!confirm(`确定删除${item.name||item.username||item.quote_no}吗？`))return;try{const path=kind==='body'?'bodies':kind==='accessory'?'accessories':kind==='bundle'?'bundles':kind==='user'?'users':'quotes';await api(`/api/admin/${path}/${item.id||item.quote_no}`,{method:'DELETE'});await loadAdmin()}catch(e:any){notice.value=e.message}}
-async function toggleBundle(item:any){await api(`/api/admin/bundles/${item.id}`,{method:'PATCH',body:JSON.stringify({name:item.name,description:item.description,body_id:item.body.id,active:!item.active,items:item.items.map((x:any)=>({accessory_id:x.accessory.id,quantity:Number(x.quantity),position:x.position}))})});await loadAdmin()}
-async function toggleResource(kind:'body'|'accessory',item:any){try{const path=kind==='body'?'bodies':'accessories';const payload=kind==='body'?{name:item.name,model:item.model,description:item.description||'',image_url:item.image_url||'',cost:Number(item.cost||0),active:!item.active}:{name:item.name,model:item.model,category:item.category,image_url:item.image_url||'',attributes:item.attributes||{},cost:Number(item.cost||0),default_qty:Number(item.default_qty||0),min_qty:Number(item.min_qty||0),max_qty:Number(item.max_qty||0),active:!item.active};await api(`/api/admin/${path}/${item.id}`,{method:'PATCH',body:JSON.stringify(payload)});await loadAdmin()}catch(e:any){notice.value=e.message}}
-function addBundleItem(){const candidate=adminAccessories.value.find(x=>x.active&&!bundleForm.items.some((i:any)=>i.accessory_id===x.id));if(candidate)bundleForm.items.push({accessory_id:candidate.id,quantity:1,position:bundleForm.items.length+1})}
-async function saveSettings(){await api('/api/admin/pricing-settings',{method:'PATCH',body:JSON.stringify(settings)});await loadAdmin();notice.value='计价参数已保存'}
-onMounted(async()=>{try{session.value=await api('/api/auth/me');session.value.role==='admin'?await loadAdmin():await loadEmployee()}catch{}})
+const session = ref<Session | null>(null)
+const booting = ref(true)
+
+function onSessionExpired() {
+  if (!session.value) return
+  session.value = null
+  toast('登录已过期，请重新登录', 'err')
+}
+
+onMounted(async () => {
+  window.addEventListener('pricing:session-expired', onSessionExpired)
+  try {
+    session.value = await api<Session>('/api/auth/me')
+  } catch {
+    session.value = null
+  } finally {
+    booting.value = false
+  }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('pricing:session-expired', onSessionExpired)
+})
+
+function onLogin(value: Session) {
+  session.value = value
+}
+
+async function logout() {
+  try {
+    await api('/api/auth/logout', { method: 'POST' })
+  } catch {
+    /* 退出失败也让界面回到登录页 */
+  }
+  session.value = null
+}
 </script>
 
 <template>
-<main class="app-shell">
-  <section v-if="!session" class="login-layout"><div class="login-art"><div class="constellation"><span v-for="n in 7" :key="n" :style="{'--i':n}"></span></div><p class="eyebrow">SHOWER / PRICING STUDIO</p><h1>让每一套<br><em>花洒组合</em>都有清晰答案。</h1><p class="intro">内部报价工作台。先从预设套装开始，服务器统一核算最终售价。</p><div class="login-note"><span>✦</span><div><b>组件星轨</b><small>把每个组件连接到一张可追溯报价单</small></div></div></div><form class="login-card" autocomplete="off" @submit.prevent="login"><div class="brand-mark">✦ <span>星瀑</span></div><p class="eyebrow">INTERNAL PRICING</p><h2>欢迎回来</h2><p class="muted">登录你的工作台</p><label>账号<input v-model="loginForm.username" autocomplete="off"></label><label>密码<input v-model="loginForm.password" type="password" autocomplete="new-password"></label><button class="primary wide">进入工作台 <span>→</span></button><p v-if="loginError" class="error">{{loginError}}</p></form></section>
-  <section v-else class="workspace"><header class="topbar"><div class="brand-mark">✦ <span>星瀑计价平台</span></div><div class="topbar-right"><span class="role-chip">{{session.role==='admin'?'管理员':'员工'}}</span><b>{{session.username}}</b><button class="ghost" @click="logout">退出</button></div></header>
-    <section v-if="session.role==='employee'" class="employee-shell"><div class="employee-intro"><div><p class="eyebrow">PRESET BUNDLE QUOTES</p><h1>从预设套装开始报价</h1><p>搜索套装，按同类别替换配件，保存本次报价快照。</p></div><b>0{{employeeStep}} / 03</b></div><div class="stepper-dock"><button :class="{active:employeeStep===1}" @click="employeeStep=1">1 搜索套装</button><button :class="{active:employeeStep===2}" @click="selectedBundle&&(employeeStep=2)">2 查看与替换</button><button :class="{active:employeeStep===3}" @click="selectedBundle&&(employeeStep=3)">3 确认报价</button></div><div class="employee-grid"><section class="workbench-card">
-      <div v-if="employeeStep===1" class="step-panel"><div class="panel-heading"><div><p class="eyebrow">STEP 01</p><h2>搜索预设套装</h2><p>支持搜索套装名称、主体和配件型号。</p></div><span class="counter">{{filteredBundles.length}} 套</span></div><label class="quick-filter"><span>⌕</span><input v-model="bundleQuery" placeholder="搜索套装、主体或配件"></label><div class="body-grid large"><button v-for="b in filteredBundles" :key="b.id" class="body-card bundle-card" @click="chooseBundle(b)"><div class="product-visual"><img v-if="b.body?.image_url" :src="b.body.image_url"><span v-else>⌁</span></div><div class="card-copy"><strong>{{b.name}}</strong><small>{{b.body?.name}} · {{b.body?.model}} · {{b.item_count||b.items?.length}} 个配件</small><p>{{b.description||'暂无说明'}}</p></div></button><div v-if="!filteredBundles.length" class="empty-state">暂无启用套装。</div></div></div>
-      <div v-else-if="employeeStep===2" class="step-panel"><div class="panel-heading"><div><p class="eyebrow">STEP 02</p><h2>{{selectedBundle?.name}}</h2><p>{{selectedBundle?.description}}</p></div><button class="pill-button" @click="employeeStep=1">返回搜索</button></div><div class="selected-body-strip"><span>主体</span><b>{{selectedBundle?.body?.name}} · {{selectedBundle?.body?.model}}</b></div><div class="bundle-detail-list"><div v-for="item in selectedItems" :key="item.id" class="bundle-detail-row"><div class="mini-visual"><img v-if="item.accessory.image_url" :src="item.accessory.image_url"><span v-else>✧</span></div><div class="data-main"><b>{{item.accessory.name}}</b><small>{{item.accessory.category}} · {{item.accessory.model}} · 数量 {{item.quantity}}</small></div><button class="pill-button" @click="replacementItemId=item.id">替换</button><button v-if="draft[item.id].accessory_id!==item.accessory.id" class="pill-button" @click="restore(item)">恢复</button></div></div><div v-if="replacementItemId" class="modal-backdrop" @click.self="replacementItemId=null"><div class="admin-card replacement-modal"><div class="form-title"><b>选择同类别配件</b><button class="pill-button" @click="replacementItemId=null">关闭</button></div><div v-for="a in (selectedBundle?.replacement_candidates?.[selectedBundle?.items.find((x:any)=>x.id===replacementItemId)?.accessory.category]||[])" :key="a.id" class="replacement-option"><span>{{a.name}} · {{a.model}}</span><button class="pill-button" @click="replace(selectedBundle?.items.find((x:any)=>x.id===replacementItemId),a)">选择</button></div></div></div></div>
-      <div v-else class="step-panel"><div class="panel-heading"><div><p class="eyebrow">STEP 03</p><h2>确认报价</h2><p>保存后不会修改原预设套装。</p></div><button class="pill-button" @click="employeeStep=2">返回替换</button></div><div class="review-list"><div class="review-item main"><div><b>{{selectedBundle?.name}}</b><small>{{selectedBundle?.body?.name}} · v{{selectedBundle?.version}}</small></div></div><div v-for="item in selectedItems" :key="item.id" class="review-item"><div><b>{{item.accessory.name}}</b><small>{{item.accessory.category}} · {{item.accessory.model}}</small></div><strong>× {{item.quantity}}</strong></div></div><div class="discount-row"><label>折扣方式<select v-model="discountType"><option value="percent">百分比折扣</option><option value="amount">固定金额</option></select></label><label>{{discountType==='percent'?'折扣（%）':'减免金额'}}<input v-model.number="discountValue" type="number" min="0"></label></div></div>
-    </section><aside class="quote-rail"><h3>实时报价</h3><div v-for="item in selectedItems" :key="item.id" class="rail-line"><div><b>{{item.accessory.name}}</b><small>{{item.accessory.category}}</small></div><em>{{item.quantity}}</em></div><button v-if="employeeStep===2" class="primary wide" @click="employeeStep=3">进入报价确认 →</button><button v-if="employeeStep===3" class="primary wide" :disabled="busy" @click="calculate(false)">{{busy?'计算中…':'计算最终售价'}}</button><div class="rail-price"><span>最终对外售价</span><strong v-if="preview">¥ {{preview.final_price}}</strong><small>含税 · 含运费</small></div><button class="secondary wide" :disabled="!preview" @click="calculate(true)">保存报价单</button><p v-if="notice" class="notice">{{notice}}</p><div class="quote-history"><b>最近报价</b><button v-for="q in quotes.slice(0,5)" :key="q.quote_no" class="history-link" @click="openQuote(q.quote_no)">{{q.quote_no}} · ¥{{q.final_price}}</button></div></aside></div></section>
-    <section v-else class="admin-shell"><aside class="admin-sidebar"><div class="admin-sidebar-title"><span class="admin-orbit">✦</span><div><b>控制室</b><small>ADMIN CONTROL ROOM</small></div></div><nav><button v-for="tab in ['概览','计价参数','主体','配件','套装','账号','报价','日志']" :key="tab" :class="{active:adminTab===tab}" @click="adminTab=tab;clearEditor()">{{tab}}</button></nav></aside><div class="admin-main"><section v-if="adminTab==='概览'" class="admin-page"><div class="page-heading"><div><p class="eyebrow">OVERVIEW</p><h2>维护工作台</h2><p>主体、配件、套装和计价参数统一维护。</p></div></div><div class="metric-grid"><div><span>启用主体</span><strong>{{activeBodyCount}}</strong></div><div><span>启用配件</span><strong>{{activeAccessoryCount}}</strong></div><div><span>预设套装</span><strong>{{adminBundles.length}}</strong></div><div><span>报价单</span><strong>{{adminQuotes.length}}</strong></div></div></section>
-      <section v-else-if="adminTab==='计价参数'" class="admin-page"><div class="page-heading"><h2>统一计价参数</h2><button class="primary" @click="saveSettings">保存变更</button></div><div class="admin-card settings-grid"><label>统一倍率<input v-model.number="settings.multiplier" min="1" type="number"></label><label>统一人工费<input v-model.number="settings.labor_fee" type="number"></label><label>税率（%）<input v-model.number="settings.tax_rate_percent" type="number"></label><label>运费<input v-model.number="settings.freight" type="number"></label><label>有效期（天）<input v-model.number="settings.quote_valid_days" type="number"></label><label>最大折扣（%）<input v-model.number="settings.max_discount_percent" type="number"></label><label>最低售价<input v-model.number="settings.minimum_price" type="number"></label><div class="formula-note"><b>成本小计（主体 + 配件数量 + 人工费）× 倍率 → 折扣 → 税费 → 运费 → 最终售价</b></div></div></section>
-      <section v-else-if="adminTab==='主体'" class="admin-page"><div class="page-heading"><h2>主体目录</h2><button class="primary" @click="editor='body'">＋ 新增主体</button></div><div class="admin-card data-card"><div v-for="x in adminBodies" :key="x.id" class="data-row"><div class="data-main"><b>{{x.name}}</b><small>{{x.model}} · ¥{{x.cost}} · {{x.active?'启用':'停用'}}</small></div><button class="pill-button" @click="toggleResource('body',x)">{{x.active?'停用':'启用'}}</button><button class="pill-button" @click="edit('body',x)">编辑</button><button class="pill-button pill-danger" @click="removeEntity('body',x)">删除</button></div></div></section>
-      <section v-else-if="adminTab==='配件'" class="admin-page"><div class="page-heading"><h2>配件目录</h2><button class="primary" @click="editor='accessory'">＋ 新增配件</button></div><div class="admin-card data-card"><div v-for="x in adminAccessories" :key="x.id" class="data-row"><div class="data-main"><b>{{x.name}}</b><small>{{x.category}} · {{x.model}} · ¥{{x.cost}} · {{x.active?'启用':'停用'}}</small></div><button class="pill-button" @click="toggleResource('accessory',x)">{{x.active?'停用':'启用'}}</button><button class="pill-button" @click="edit('accessory',x)">编辑</button><button class="pill-button pill-danger" @click="removeEntity('accessory',x)">删除</button></div></div></section>
-      <section v-else-if="adminTab==='套装'" class="admin-page"><div class="page-heading"><div><h2>预设套装</h2><p>套装只保存主体、配件和数量，员工报价时可同类别替换。</p></div><button class="primary" @click="editor='bundle'">＋ 新增套装</button></div><div class="admin-card data-card"><div v-for="x in adminBundles" :key="x.id" class="data-row"><div class="data-main"><b>{{x.name}}</b><small>{{x.body?.name}} · {{x.items?.length}} 个配件 · v{{x.version}} · {{x.active?'启用':'停用'}}</small></div><button class="pill-button" @click="toggleBundle(x)">{{x.active?'停用':'启用'}}</button><button class="pill-button" @click="edit('bundle',x)">编辑</button><button class="pill-button pill-danger" @click="removeEntity('bundle',x)">删除</button></div></div></section>
-      <section v-else-if="adminTab==='账号'" class="admin-page"><div class="page-heading"><h2>账号管理</h2><button class="primary" @click="editor='user'">＋ 新增账号</button></div><div class="admin-card data-card"><div v-for="x in users" :key="x.id" class="data-row"><div class="data-main"><b>{{x.username}}</b><small>{{x.role==='admin'?'管理员':'员工'}} · {{x.active?'启用':'停用'}}</small></div><button class="pill-button" @click="edit('user',x)">编辑</button><button class="pill-button pill-danger" @click="removeEntity('user',x)">删除</button></div></div></section>
-      <section v-else-if="adminTab==='报价'" class="admin-page"><div class="page-heading"><h2>报价记录</h2><button class="pill-button" @click="loadAdmin">刷新</button></div><div class="admin-card data-card"><div v-for="x in adminQuotes" :key="x.quote_no" class="data-row"><div class="data-main"><b>{{x.quote_no}}</b><small>{{x.username}} · {{x.status}}</small></div><strong>¥ {{x.final_price}}</strong></div></div></section>
-      <section v-else class="admin-page"><div class="page-heading"><h2>操作日志</h2><button class="pill-button" @click="loadAdmin">刷新</button></div><div class="admin-card data-card"><div v-for="x in logs" :key="x.id" class="data-row"><div class="data-main"><b>{{x.action}} · {{x.target_type}}</b><small>{{x.username}} · {{x.created_at}}</small></div><button class="pill-button" @click="selectedLog=x">查看详情</button></div></div><div v-if="selectedLog" class="modal-backdrop" @click.self="selectedLog=null"><div class="admin-card"><h3>日志详情</h3><pre>{{JSON.stringify(selectedLog.detail,null,2)}}</pre><button class="pill-button" @click="selectedLog=null">关闭</button></div></div></section>
-    </div></section>
-    <div v-if="editor" class="modal-backdrop" @click.self="clearEditor"><form class="admin-card edit-form" @submit.prevent="saveEntity(editor)"><div class="form-title"><b>{{editor==='bundle'?'套装编辑器':editor==='body'?'主体编辑器':editor==='accessory'?'配件编辑器':'账号编辑器'}}</b><button type="button" class="pill-button" @click="clearEditor">取消</button></div><template v-if="editor==='body'"><label>名称<input v-model="bodyForm.name" required></label><label>型号<input v-model="bodyForm.model" required></label><label>成本<input v-model.number="bodyForm.cost" type="number"></label><label>描述<textarea v-model="bodyForm.description"></textarea></label><button class="primary">保存主体</button></template><template v-else-if="editor==='accessory'"><label>名称<input v-model="accessoryForm.name" required></label><label>型号<input v-model="accessoryForm.model" required></label><label>类别<input v-model="accessoryForm.category" required></label><label>成本<input v-model.number="accessoryForm.cost" type="number"></label><label>最大数量<input v-model.number="accessoryForm.max_qty" type="number"></label><button class="primary">保存配件</button></template><template v-else-if="editor==='bundle'"><label>套装名称<input v-model="bundleForm.name" required></label><label>主体<select v-model.number="bundleForm.body_id"><option :value="0">请选择</option><option v-for="x in adminBodies.filter(x=>x.active)" :value="x.id">{{x.name}} · {{x.model}}</option></select></label><label>说明<textarea v-model="bundleForm.description"></textarea></label><div class="bundle-builder"><button type="button" class="pill-button" @click="addBundleItem">＋ 添加配件</button><div v-for="(item,index) in bundleForm.items" :key="index" class="bundle-builder-row"><select v-model.number="item.accessory_id"><option v-for="x in adminAccessories.filter(x=>x.active)" :value="x.id">{{x.category}} · {{x.name}}</option></select><input v-model.number="item.quantity" type="number" min="0"></div></div><button class="primary">保存套装</button></template><template v-else><label>账号<input v-model="userForm.username" required></label><label>密码<input v-model="userForm.password" type="password" :placeholder="userForm.id?'留空表示不修改':'至少8位'"></label><label>角色<select v-model="userForm.role"><option value="employee">员工</option><option value="admin">管理员</option></select></label><button class="primary">保存账号</button></template></form></div>
-  </section>
-</main>
+  <div v-if="booting" class="boot">正在进入工作台…</div>
+
+  <LoginView v-else-if="!session" @login="onLogin" />
+
+  <div v-else>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <span class="brand-mark">✦</span>
+          <span>星瀑计价平台</span>
+        </div>
+        <div class="topbar-right">
+          <span class="role-chip">{{ session.role === 'admin' ? '管理员' : '员工' }}</span>
+          <b>{{ session.username }}</b>
+          <button class="btn btn-sm btn-ghost" @click="logout">退出登录</button>
+        </div>
+      </div>
+    </header>
+
+    <AdminView v-if="session.role === 'admin'" :username="session.username" />
+    <EmployeeView v-else />
+  </div>
+
+  <ToastStack />
 </template>

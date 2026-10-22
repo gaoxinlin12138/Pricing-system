@@ -6,10 +6,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$psql = 'D:\LenovoSoftstore\Install\PostgreSQL\bin\psql.exe'
-if (-not (Test-Path -LiteralPath $psql)) {
-    throw ('psql not found: ' + $psql)
-}
+. (Join-Path $PSScriptRoot 'Resolve-Psql.ps1')
+
+$psql = Resolve-PsqlPath
+$backendPython = Resolve-BackendPython
 
 $securePassword = Read-Host 'PostgreSQL password (input is hidden)' -AsSecureString
 $passwordPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
@@ -41,7 +41,7 @@ try {
     $env:DATABASE_URL = ('postgresql+psycopg://' + $DbUser + ':' + $encodedPassword + '@' + $ServerHost + ':' + $Port + '/' + $Database)
     Push-Location (Join-Path $PSScriptRoot '..\backend')
     try {
-        py -m alembic -c alembic.ini upgrade head
+        & $backendPython -m alembic -c alembic.ini upgrade head
         if ($LASTEXITCODE -ne 0) {
             throw ('Alembic migration failed. Exit code: ' + $LASTEXITCODE)
         }
