@@ -210,3 +210,13 @@ select:hover{border-color:#8ccfc9;background-color:#fbfffd}select:focus,select:f
 .log-data-row{grid-template-columns:44px minmax(0,1fr) 440px;min-width:0}.log-data-row>.log-detail{display:grid!important;grid-template-columns:minmax(0,1fr) 92px;align-items:center;gap:10px;min-width:0;max-width:none;width:100%}.log-data-row .log-detail-preview{min-width:0;max-width:none;width:100%}.log-data-row .log-detail .pill-button{justify-self:end;white-space:nowrap}
 @media(max-width:900px){.log-data-row{grid-template-columns:44px minmax(0,1fr) 360px}.log-data-row>.log-detail{grid-template-columns:minmax(0,1fr) 88px}}
 @media(max-width:760px){.log-data-row{grid-template-columns:36px minmax(0,1fr)}.log-data-row>.log-detail{grid-column:2;max-width:100%;grid-template-columns:minmax(0,1fr) auto}.log-data-row .log-detail .pill-button{justify-self:end}}
+/* Preset bundle workflow */
+.bundle-grid{grid-template-columns:repeat(auto-fit,minmax(280px,1fr));}
+.bundle-card{min-height:150px;text-align:left;}
+.bundle-detail-list,.bundle-builder{display:grid;gap:12px;margin-top:18px;}
+.bundle-detail-row,.bundle-builder-row,.replacement-option{display:flex;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line,#d8e7e2);border-radius:14px;background:rgba(255,255,255,.45);}
+.bundle-detail-row .data-main{flex:1;}
+.bundle-builder-row select,.bundle-builder-row input,.edit-form select{flex:1;min-height:42px;}
+.replacement-modal{width:min(680px,calc(100vw - 32px));max-height:80vh;overflow:auto;}
+.replacement-option span{flex:1;}
+.bundle-admin-row .resource-row-actions{margin-left:auto;}

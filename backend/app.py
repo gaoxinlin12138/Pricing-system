@@ -18,7 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, create_engine, or_, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, create_engine, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
@@ -162,13 +163,25 @@ class Accessory(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
-class CompatibilityRule(Base):
-    __tablename__ = "compatibility_rules"
+class Bundle(Base):
+    __tablename__ = "bundles"
     id: Mapped[int] = mapped_column(primary_key=True)
-    rule_type: Mapped[str] = mapped_column(String(20))
-    source_accessory_id: Mapped[int] = mapped_column(ForeignKey("accessories.id"))
-    target_accessory_id: Mapped[int] = mapped_column(ForeignKey("accessories.id"))
+    name: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str] = mapped_column(Text, default="")
+    body_id: Mapped[int] = mapped_column(ForeignKey("bodies.id", ondelete="RESTRICT"), index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class BundleItem(Base):
+    __tablename__ = "bundle_items"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bundle_id: Mapped[int] = mapped_column(ForeignKey("bundles.id", ondelete="CASCADE"), index=True)
+    accessory_id: Mapped[int] = mapped_column(ForeignKey("accessories.id", ondelete="RESTRICT"), index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=1)
+    position: Mapped[int] = mapped_column(Integer, default=1)
+    __table_args__ = (UniqueConstraint("bundle_id", "accessory_id", name="uq_bundle_accessory"),)
 
 
 class PricingSettings(Base):
@@ -188,7 +201,8 @@ class Quote(Base):
     __tablename__ = "quotes"
     id: Mapped[int] = mapped_column(primary_key=True)
     quote_no: Mapped[str] = mapped_column(String(40), unique=True, index=True)
-    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_by_name_snapshot: Mapped[str | None] = mapped_column(String(60), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(20), default="saved")
@@ -199,10 +213,13 @@ class Quote(Base):
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(primary_key=True)
-    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    actor_name_snapshot: Mapped[str | None] = mapped_column(String(60), nullable=True)
     action: Mapped[str] = mapped_column(String(40))
     target_type: Mapped[str] = mapped_column(String(40))
     target_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    target_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    target_label: Mapped[str | None] = mapped_column(String(160), nullable=True)
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     ip_address: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -266,11 +283,31 @@ class UserIn(BaseModel):
     active: bool = True
 
 
-class RuleIn(BaseModel):
-    rule_type: Literal["requires", "excludes"]
-    source_accessory_id: int
-    target_accessory_id: int
+class BundleItemIn(BaseModel):
+    accessory_id: int
+    quantity: Decimal = Field(default=Decimal("1"), gt=0)
+    position: int = Field(default=1, ge=1)
+
+
+class BundleIn(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    description: str = ""
+    body_id: int
     active: bool = True
+    items: list[BundleItemIn] = Field(min_length=1)
+
+
+class BundleLineIn(BaseModel):
+    bundle_item_id: int
+    accessory_id: int
+    quantity: Decimal = Field(ge=0)
+
+
+class BundleQuoteIn(BaseModel):
+    bundle_id: int
+    lines: list[BundleLineIn] = Field(min_length=1)
+    discount_type: Literal["percent", "amount"] = "percent"
+    discount_value: Decimal = Field(default=Decimal("0"), ge=0)
 
 
 app = FastAPI(title="星瀑计价平台", version="0.2.0")
@@ -283,6 +320,11 @@ async def http_error(_: Request, exc: HTTPException):
     message = exc.detail if isinstance(exc.detail, str) else "请求参数无效"
     code = "AUTH_ERROR" if exc.status_code in (401, 403) else "VALIDATION_ERROR" if exc.status_code < 500 else "SERVER_ERROR"
     return JSONResponse(status_code=exc.status_code, content={"code": code, "message": message, "details": {}})
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_error(_: Request, __: IntegrityError):
+    return JSONResponse(status_code=409, content={"code": "CONFLICT", "message": "数据关联冲突，操作未完成", "details": {}})
 
 
 def get_db():
@@ -332,6 +374,74 @@ def private_accessory(row: Accessory) -> dict[str, Any]:
     return {**public_accessory(row), "cost": str(rounded(row.cost)), "active": row.active, "version": row.version, "updated_at": row.updated_at.isoformat()}
 
 
+def _bundle_items(db: Session, bundle_id: int) -> list[BundleItem]:
+    return db.scalars(select(BundleItem).where(BundleItem.bundle_id == bundle_id).order_by(BundleItem.position, BundleItem.id)).all()
+
+
+def private_bundle(db: Session, bundle: Bundle) -> dict[str, Any]:
+    body = db.get(Body, bundle.body_id)
+    items = _bundle_items(db, bundle.id)
+    accessories = {x.id: x for x in db.scalars(select(Accessory).where(Accessory.id.in_([i.accessory_id for i in items]))).all()} if items else {}
+    return {
+        "id": bundle.id,
+        "name": bundle.name,
+        "description": bundle.description or "",
+        "active": bundle.active,
+        "version": bundle.version,
+        "updated_at": bundle.updated_at.isoformat(),
+        "body": private_body(body) if body else None,
+        "items": [{"id": i.id, "accessory": private_accessory(accessories[i.accessory_id]), "quantity": str(i.quantity), "position": i.position} for i in items if i.accessory_id in accessories],
+    }
+
+
+def public_bundle(db: Session, bundle: Bundle, *, include_replacements: bool = False) -> dict[str, Any]:
+    body = db.get(Body, bundle.body_id)
+    items = _bundle_items(db, bundle.id)
+    accessories = {x.id: x for x in db.scalars(select(Accessory).where(Accessory.id.in_([i.accessory_id for i in items]))).all()} if items else {}
+    result: dict[str, Any] = {
+        "id": bundle.id,
+        "name": bundle.name,
+        "description": bundle.description or "",
+        "version": bundle.version,
+        "body": public_body(body) if body else None,
+        "items": [{"id": i.id, "accessory": public_accessory(accessories[i.accessory_id]), "quantity": str(i.quantity), "position": i.position} for i in items if i.accessory_id in accessories],
+    }
+    if include_replacements:
+        categories = sorted({accessories[i.accessory_id].category for i in items if i.accessory_id in accessories})
+        candidates = db.scalars(select(Accessory).where(Accessory.active, Accessory.category.in_(categories)).order_by(Accessory.category, Accessory.id)).all() if categories else []
+        result["replacement_candidates"] = {category: [public_accessory(x) for x in candidates if x.category == category] for category in categories}
+    return result
+
+
+def bundle_references_for_body(db: Session, body_id: int) -> list[str]:
+    return [x.name for x in db.scalars(select(Bundle).where(Bundle.body_id == body_id).order_by(Bundle.name)).all()]
+
+
+def bundle_references_for_accessory(db: Session, accessory_id: int) -> list[str]:
+    return [x.name for x in db.scalars(select(Bundle).join(BundleItem, BundleItem.bundle_id == Bundle.id).where(BundleItem.accessory_id == accessory_id).order_by(Bundle.name)).all()]
+
+
+def validate_bundle_payload(payload: BundleIn, db: Session, existing_id: int | None = None) -> tuple[Body, list[Accessory]]:
+    body = db.get(Body, payload.body_id)
+    if not body:
+        raise HTTPException(400, "主体不存在")
+    if payload.active and not body.active:
+        raise HTTPException(400, "套装启用时主体必须处于启用状态")
+    ids = [item.accessory_id for item in payload.items]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(400, "套装内同一配件只能出现一次，请使用数量表示用量")
+    accessories = {x.id: x for x in db.scalars(select(Accessory).where(Accessory.id.in_(ids))).all()}
+    if len(accessories) != len(ids):
+        raise HTTPException(400, "套装包含不存在的配件")
+    for item in payload.items:
+        accessory = accessories[item.accessory_id]
+        if payload.active and not accessory.active:
+            raise HTTPException(400, f"配件 {accessory.name} 已停用，不能启用套装")
+        if item.quantity < accessory.min_qty or item.quantity > accessory.max_qty:
+            raise HTTPException(400, f"{accessory.name} 数量需在 {accessory.min_qty} 到 {accessory.max_qty} 之间")
+    return body, [accessories[x] for x in ids]
+
+
 def current_user(session: str | None = Cookie(default=None, alias="shower_session"), db: Session = Depends(get_db)) -> User:
     if not session:
         raise HTTPException(401, "请先登录")
@@ -351,10 +461,42 @@ def admin_user(user: User = Depends(current_user)) -> User:
     return user
 
 
-def audit(db: Session, user: User | None, action: str, target: str, target_id: str, detail: dict[str, Any] | None = None) -> None:
+def audit(
+    db: Session,
+    user: User | None,
+    action: str,
+    target: str,
+    target_id: str,
+    detail: dict[str, Any] | None = None,
+    *,
+    target_label: str | None = None,
+    target_deleted: bool = False,
+) -> None:
     # PostgreSQL JSON 字段不能直接序列化 Decimal；审计日志只保存摘要，统一转换为字符串。
     safe_detail = json.loads(json.dumps(detail or {}, default=str))
-    db.add(AuditLog(actor_id=user.id if user else None, action=action, target_type=target, target_id=target_id, detail=safe_detail))
+    db.add(
+        AuditLog(
+            actor_id=user.id if user else None,
+            actor_name_snapshot=user.username if user else None,
+            action=action,
+            target_type=target,
+            target_id=target_id,
+            target_deleted=target_deleted,
+            target_label=target_label or target_id,
+            detail=safe_detail,
+        )
+    )
+
+
+def mark_target_deleted(db: Session, target_type: str, target_id: str, target_label: str) -> None:
+    """Keep historical audit rows, but explicitly mark their target as deleted."""
+    db.query(AuditLog).filter(
+        AuditLog.target_type == target_type,
+        AuditLog.target_id == target_id,
+    ).update(
+        {AuditLog.target_deleted: True, AuditLog.target_label: target_label},
+        synchronize_session=False,
+    )
 
 
 def upload_filename(image_url: str | None) -> str | None:
@@ -404,19 +546,6 @@ def cleanup_orphan_uploads(db: Session) -> int:
             except OSError:
                 pass
     return removed
-
-
-def quote_references(db: Session, body_id: int | None = None, accessory_id: int | None = None) -> list[str]:
-    """Find saved quote snapshots that still depend on a catalog record."""
-    matches=[]
-    for quote in db.scalars(select(Quote)).all():
-        snapshot=quote.snapshot or {}
-        if body_id is not None and str((snapshot.get("body") or {}).get("id")) == str(body_id):
-            matches.append(quote.quote_no)
-            continue
-        if accessory_id is not None and any(str(line.get("accessory_id")) == str(accessory_id) for line in snapshot.get("lines", [])):
-            matches.append(quote.quote_no)
-    return matches
 
 
 def seed_if_empty(db: Session) -> None:
@@ -483,16 +612,36 @@ def accessory_categories(_: User = Depends(current_user)):
     ]
 
 
+@app.get("/api/catalog/bundles")
+def catalog_bundles(q: str = "", _: User = Depends(current_user), db: Session = Depends(get_db)):
+    bundles = db.scalars(select(Bundle).where(Bundle.active).order_by(Bundle.id.desc())).all()
+    needle = q.strip().lower()
+    result = []
+    for bundle in bundles:
+        item_rows = _bundle_items(db, bundle.id)
+        body = db.get(Body, bundle.body_id)
+        accessories = [db.get(Accessory, item.accessory_id) for item in item_rows]
+        haystack = " ".join([bundle.name, bundle.description or "", body.name if body else "", body.model if body else "", *[f"{x.name} {x.model}" for x in accessories if x]])
+        if needle and needle not in haystack.lower():
+            continue
+        result.append({"id": bundle.id, "name": bundle.name, "description": bundle.description or "", "version": bundle.version, "body": public_body(body) if body else None, "item_count": len(item_rows)})
+    return result
+
+
+@app.get("/api/catalog/bundles/{bundle_id}")
+def catalog_bundle_detail(bundle_id: int, _: User = Depends(current_user), db: Session = Depends(get_db)):
+    bundle = db.scalar(select(Bundle).where(Bundle.id == bundle_id, Bundle.active))
+    if not bundle:
+        raise HTTPException(404, "套装不存在或已停用")
+    return public_bundle(db, bundle, include_replacements=True)
+
+
 def calculate(payload: QuoteIn, db: Session, private: bool = False) -> dict[str, Any]:
     body = db.scalar(select(Body).where(Body.id == payload.body_id, Body.active))
     if not body: raise HTTPException(400, "主体不存在或已停用")
     settings = db.get(PricingSettings, 1)
     ids = [x.accessory_id for x in payload.lines]; rows = {x.id:x for x in db.scalars(select(Accessory).where(Accessory.id.in_(ids), Accessory.active)).all()}
     if len(rows) != len(set(ids)): raise HTTPException(400, "存在不存在或已停用的配件")
-    selected = set(ids)
-    for rule in db.scalars(select(CompatibilityRule).where(CompatibilityRule.active)).all():
-        if rule.source_accessory_id in selected and rule.rule_type == "excludes" and rule.target_accessory_id in selected: raise HTTPException(400, "所选配件存在互斥关系")
-        if rule.source_accessory_id in selected and rule.rule_type == "requires" and rule.target_accessory_id not in selected: raise HTTPException(400, "所选配件缺少依赖配件")
     accessory_total = Decimal("0"); lines = []
     for line in payload.lines:
         row = rows[line.accessory_id]; qty = Decimal(line.quantity)
@@ -518,6 +667,49 @@ def calculate(payload: QuoteIn, db: Session, private: bool = False) -> dict[str,
     return result
 
 
+def calculate_bundle(payload: BundleQuoteIn, db: Session, private: bool = False) -> dict[str, Any]:
+    bundle = db.get(Bundle, payload.bundle_id)
+    if not bundle or not bundle.active:
+        raise HTTPException(400, "套装不存在或已停用")
+    body = db.scalar(select(Body).where(Body.id == bundle.body_id, Body.active))
+    if not body:
+        raise HTTPException(400, "套装主体不存在或已停用")
+    items = _bundle_items(db, bundle.id)
+    by_id = {item.id: item for item in items}
+    if set(by_id) != {line.bundle_item_id for line in payload.lines} or len(payload.lines) != len(items):
+        raise HTTPException(400, "报价明细必须完整对应套装配件")
+    accessory_ids = [line.accessory_id for line in payload.lines]
+    rows = {x.id: x for x in db.scalars(select(Accessory).where(Accessory.id.in_(accessory_ids), Accessory.active)).all()}
+    if len(rows) != len(set(accessory_ids)):
+        raise HTTPException(400, "存在不存在或已停用的报价配件")
+    replacements: list[dict[str, Any]] = []
+    legacy_lines: list[LineIn] = []
+    original_items: list[dict[str, Any]] = []
+    for line in payload.lines:
+        original = by_id[line.bundle_item_id]
+        target = rows[line.accessory_id]
+        original_accessory = db.get(Accessory, original.accessory_id)
+        if not original_accessory or target.category != original_accessory.category:
+            raise HTTPException(400, "替换配件必须与原配件属于同一类别")
+        qty = Decimal(line.quantity)
+        if qty < target.min_qty or qty > target.max_qty:
+            raise HTTPException(400, f"{target.name} 数量需在 {target.min_qty} 到 {target.max_qty} 之间")
+        legacy_lines.append(LineIn(accessory_id=target.id, quantity=qty))
+        original_items.append({"bundle_item_id": original.id, "accessory_id": original_accessory.id, "name": original_accessory.name, "model": original_accessory.model, "category": original_accessory.category, "quantity": str(original.quantity), "position": original.position})
+        if target.id != original_accessory.id:
+            replacements.append({"bundle_item_id": original.id, "original_accessory_id": original_accessory.id, "original_name": original_accessory.name, "replacement_accessory_id": target.id, "replacement_name": target.name, "category": target.category})
+    result = calculate(QuoteIn(body_id=body.id, lines=legacy_lines, discount_type=payload.discount_type, discount_value=payload.discount_value), db, private=private)
+    for result_line, source_line in zip(result.get("lines", []), payload.lines):
+        result_line["bundle_item_id"] = source_line.bundle_item_id
+    result["bundle"] = {"id": bundle.id, "name": bundle.name, "version": bundle.version, "description": bundle.description or ""}
+    result["original_bundle_items"] = original_items
+    result["replacements"] = replacements
+    if private:
+        result["private"]["bundle_id"] = str(bundle.id)
+        result["private"]["bundle_version"] = str(bundle.version)
+    return result
+
+
 def quote_status(quote: Quote) -> str:
     valid_until = quote.valid_until
     if valid_until.tzinfo is None:
@@ -525,14 +717,28 @@ def quote_status(quote: Quote) -> str:
     return "expired" if quote.status in ("saved", "active") and valid_until < now() else quote.status
 
 
+def parse_quote_payload(data: dict[str, Any]) -> QuoteIn | BundleQuoteIn:
+    if "bundle_id" in data:
+        return BundleQuoteIn.model_validate(data)
+    return QuoteIn.model_validate(data)
+
+
 @app.post("/api/quotes/preview")
-def quote_preview(payload: QuoteIn, _: User = Depends(current_user), db: Session = Depends(get_db)): return calculate(payload, db)
+def quote_preview(payload: dict[str, Any], _: User = Depends(current_user), db: Session = Depends(get_db)):
+    parsed = parse_quote_payload(payload)
+    return calculate_bundle(parsed, db) if isinstance(parsed, BundleQuoteIn) else calculate(parsed, db)
 
 
 @app.post("/api/quotes")
-def create_quote(payload: QuoteIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    result = calculate(payload, db); private = calculate(payload, db, private=True); created = now(); valid = created + timedelta(days=db.get(PricingSettings,1).quote_valid_days); no = f"Q{created.strftime('%Y%m%d%H%M%S')}{secrets.randbelow(1000):03d}"
-    snapshot = {**result, "private": private["private"], "private_lines": private["lines"]}; quote = Quote(quote_no=no, created_by=user.id, created_at=created, valid_until=valid, status="saved", final_price=Decimal(result["final_price"]), snapshot=snapshot); db.add(quote); audit(db,user,"create","quote",no,{"final_price":result["final_price"]}); db.commit()
+def create_quote(payload: dict[str, Any] | QuoteIn | BundleQuoteIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    parsed = parse_quote_payload(payload) if isinstance(payload, dict) else payload
+    result = calculate_bundle(parsed, db) if isinstance(parsed, BundleQuoteIn) else calculate(parsed, db)
+    private = calculate_bundle(parsed, db, private=True) if isinstance(parsed, BundleQuoteIn) else calculate(parsed, db, private=True)
+    created = now(); valid = created + timedelta(days=db.get(PricingSettings,1).quote_valid_days); no = f"Q{created.strftime('%Y%m%d%H%M%S')}{secrets.randbelow(1000):03d}"
+    snapshot = {**result, "private": private["private"], "private_lines": private["lines"]}; quote = Quote(quote_no=no, created_by=user.id, created_by_name_snapshot=user.username, created_at=created, valid_until=valid, status="saved", final_price=Decimal(result["final_price"]), snapshot=snapshot); db.add(quote); audit(db,user,"create","quote",no,{"final_price":result["final_price"],"bundle_id":result.get("bundle",{}).get("id"),"replacements":result.get("replacements",[])}); 
+    if result.get("replacements"):
+        audit(db,user,"replace","bundle",str(result["bundle"]["id"]),{"bundle_id":result["bundle"]["id"],"replacements":result["replacements"],"quote_no":no},target_label=result["bundle"]["name"])
+    db.commit()
     return {"quote_no":no,"created_at":created.isoformat(),"valid_until":valid.isoformat(),"status":"saved","final_price":result["final_price"],"body":result["body"],"lines":result["lines"]}
 
 
@@ -558,7 +764,11 @@ def get_quote(quote_no: str, user: User = Depends(current_user), db: Session = D
 def duplicate_quote(quote_no: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
     quote = db.scalar(select(Quote).where(Quote.quote_no==quote_no, Quote.created_by==user.id));
     if not quote: raise HTTPException(404,"报价单不存在")
-    snap = quote.snapshot; payload = QuoteIn(body_id=snap["body"]["id"], lines=[LineIn(accessory_id=x["accessory_id"],quantity=Decimal(x["quantity"])) for x in snap.get("lines",[])], discount_type=snap.get("discount_type","percent"), discount_value=Decimal(snap.get("discount_value","0")))
+    snap = quote.snapshot
+    if snap.get("bundle", {}).get("id"):
+        payload = BundleQuoteIn(bundle_id=int(snap["bundle"]["id"]), lines=[BundleLineIn(bundle_item_id=int(x["bundle_item_id"]), accessory_id=int(x["accessory_id"]), quantity=Decimal(x["quantity"])) for x in snap.get("lines", [])], discount_type=snap.get("discount_type","percent"), discount_value=Decimal(snap.get("discount_value","0")))
+    else:
+        payload = QuoteIn(body_id=snap["body"]["id"], lines=[LineIn(accessory_id=x["accessory_id"],quantity=Decimal(x["quantity"])) for x in snap.get("lines",[])], discount_type=snap.get("discount_type","percent"), discount_value=Decimal(snap.get("discount_value","0")))
     return create_quote(payload,user,db)
 
 
@@ -575,6 +785,48 @@ def update_settings(payload: SettingsIn, user: User=Depends(admin_user), db: Ses
     s=db.get(PricingSettings,1); s.multiplier=payload.multiplier; s.labor_fee=payload.labor_fee; s.tax_rate=payload.tax_rate_percent/100; s.freight=payload.freight; s.quote_valid_days=payload.quote_valid_days; s.max_discount_percent=payload.max_discount_percent/100; s.minimum_price=payload.minimum_price; s.updated_at=now(); audit(db,user,"update","settings","1",settings_json(s)); db.commit(); return settings_json(s)
 
 
+@app.get("/api/admin/bundles")
+def admin_bundles(_: User = Depends(admin_user), db: Session = Depends(get_db)):
+    return [private_bundle(db, bundle) for bundle in db.scalars(select(Bundle).order_by(Bundle.id.desc())).all()]
+
+
+def save_bundle(bundle: Bundle, payload: BundleIn, user: User, db: Session, action: str) -> dict[str, Any]:
+    body, accessories = validate_bundle_payload(payload, db, bundle.id if bundle.id else None)
+    bundle.name = payload.name.strip(); bundle.description = payload.description.strip(); bundle.body_id = body.id; bundle.active = payload.active; bundle.version = (bundle.version or 0) + (1 if action == "update" else 0); bundle.updated_at = now()
+    if action == "create":
+        db.add(bundle); db.flush()
+    db.query(BundleItem).filter(BundleItem.bundle_id == bundle.id).delete(synchronize_session=False)
+    for item in payload.items:
+        db.add(BundleItem(bundle_id=bundle.id, accessory_id=item.accessory_id, quantity=item.quantity, position=item.position))
+    audit(db, user, action, "bundle", str(bundle.id), {"name": bundle.name, "body_id": bundle.body_id, "items": [item.model_dump() for item in payload.items], "active": bundle.active})
+    db.commit(); db.refresh(bundle)
+    return private_bundle(db, bundle)
+
+
+@app.post("/api/admin/bundles")
+def create_bundle(payload: BundleIn, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    return save_bundle(Bundle(version=1), payload, user, db, "create")
+
+
+@app.patch("/api/admin/bundles/{bundle_id}")
+def update_bundle(bundle_id: int, payload: BundleIn, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    bundle = db.get(Bundle, bundle_id)
+    if not bundle: raise HTTPException(404, "套装不存在")
+    return save_bundle(bundle, payload, user, db, "update")
+
+
+@app.delete("/api/admin/bundles/{bundle_id}")
+def delete_bundle(bundle_id: int, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    bundle = db.get(Bundle, bundle_id)
+    if not bundle: raise HTTPException(404, "套装不存在")
+    label = bundle.name
+    mark_target_deleted(db, "bundle", str(bundle.id), label)
+    audit(db, user, "delete", "bundle", str(bundle.id), {"name": bundle.name}, target_label=label, target_deleted=True)
+    db.query(BundleItem).filter(BundleItem.bundle_id == bundle.id).delete(synchronize_session=False)
+    db.delete(bundle); db.commit()
+    return {"ok": True, "deleted": True, "id": bundle_id}
+
+
 @app.get("/api/admin/bodies")
 def admin_bodies(_: User=Depends(admin_user), db: Session=Depends(get_db)): return [private_body(x) for x in db.scalars(select(Body).order_by(Body.id)).all()]
 
@@ -588,6 +840,9 @@ def create_body(payload: BodyIn, user: User=Depends(admin_user), db: Session=Dep
 def update_body(body_id:int,payload:BodyIn,user:User=Depends(admin_user),db:Session=Depends(get_db)):
     x=db.get(Body,body_id)
     if not x: raise HTTPException(404,"主体不存在")
+    if x.active and not payload.active:
+        refs = bundle_references_for_body(db, body_id)
+        if refs: raise HTTPException(409, "主体仍被套装引用，无法停用：" + "、".join(refs))
     old_image_url=x.image_url
     for key,value in payload.model_dump().items(): setattr(x,key,value)
     x.version+=1; x.updated_at=now(); audit(db,user,"update","body",str(body_id),payload.model_dump()); db.commit()
@@ -599,14 +854,14 @@ def update_body(body_id:int,payload:BodyIn,user:User=Depends(admin_user),db:Sess
 def delete_body(body_id:int,user:User=Depends(admin_user),db:Session=Depends(get_db)):
     x=db.get(Body,body_id)
     if not x: raise HTTPException(404,"主体不存在")
-    references=quote_references(db, body_id=body_id)
-    if references:
-        raise HTTPException(409,"该主体已被报价单引用，请先停用；为保护历史报价不能硬删除")
+    refs = bundle_references_for_body(db, body_id)
+    if refs: raise HTTPException(409, "主体仍被套装引用，无法删除：" + "、".join(refs))
     old_image_url=x.image_url
-    audit(db,user,"delete","body",str(body_id),{"name":x.name})
+    mark_target_deleted(db,"body",str(body_id),x.name)
+    audit(db,user,"delete","body",str(body_id),{"name":x.name},target_label=x.name,target_deleted=True)
     db.delete(x); db.commit()
     remove_uploaded_file(old_image_url, db)
-    return {"ok":True,"deleted":True}
+    return {"ok":True,"deleted":True,"id":body_id}
 
 
 @app.get("/api/admin/accessories")
@@ -624,6 +879,9 @@ def update_accessory(accessory_id:int,payload:AccessoryIn,user:User=Depends(admi
     if payload.max_qty < payload.min_qty: raise HTTPException(400,"最大数量不能小于最小数量")
     x=db.get(Accessory,accessory_id)
     if not x: raise HTTPException(404,"配件不存在")
+    if x.active and not payload.active:
+        refs = bundle_references_for_accessory(db, accessory_id)
+        if refs: raise HTTPException(409, "配件仍被套装引用，无法停用：" + "、".join(refs))
     old_image_url=x.image_url
     for key,value in payload.model_dump().items(): setattr(x,key,value)
     x.version+=1; x.updated_at=now(); audit(db,user,"update","accessory",str(accessory_id),payload.model_dump()); db.commit()
@@ -635,18 +893,14 @@ def update_accessory(accessory_id:int,payload:AccessoryIn,user:User=Depends(admi
 def delete_accessory(accessory_id:int,user:User=Depends(admin_user),db:Session=Depends(get_db)):
     x=db.get(Accessory,accessory_id)
     if not x: raise HTTPException(404,"配件不存在")
-    references=quote_references(db, accessory_id=accessory_id)
-    if references:
-        raise HTTPException(409,"该配件已被报价单引用，请先停用；为保护历史报价不能硬删除")
+    refs = bundle_references_for_accessory(db, accessory_id)
+    if refs: raise HTTPException(409, "配件仍被套装引用，无法删除：" + "、".join(refs))
     old_image_url=x.image_url
-    related_rules=db.scalars(select(CompatibilityRule).where(or_(CompatibilityRule.source_accessory_id==accessory_id, CompatibilityRule.target_accessory_id==accessory_id))).all()
-    for rule in related_rules:
-        audit(db,user,"delete","compatibility_rule",str(rule.id),{"rule_type":rule.rule_type,"source_accessory_id":rule.source_accessory_id,"target_accessory_id":rule.target_accessory_id,"reason":"source_accessory_deleted"})
-        db.delete(rule)
-    audit(db,user,"delete","accessory",str(accessory_id),{"name":x.name})
+    mark_target_deleted(db,"accessory",str(accessory_id),x.name)
+    audit(db,user,"delete","accessory",str(accessory_id),{"name":x.name},target_label=x.name,target_deleted=True)
     db.delete(x); db.commit()
     remove_uploaded_file(old_image_url, db)
-    return {"ok":True,"deleted":True,"deleted_rule_count":len(related_rules)}
+    return {"ok":True,"deleted":True,"id":accessory_id}
 
 
 @app.get("/api/admin/users")
@@ -675,49 +929,32 @@ def update_user(user_id:int,payload:UserIn,user:User=Depends(admin_user),db:Sess
 
 @app.delete("/api/admin/users/{user_id}")
 def delete_user(user_id:int,user:User=Depends(admin_user),db:Session=Depends(get_db)):
-    """账号采用停用而非硬删除，避免历史报价和审计记录失去归属。"""
     if user_id == user.id: raise HTTPException(400,"不能删除当前登录账号")
     x=db.get(User,user_id)
     if not x: raise HTTPException(404,"账号不存在")
-    x.active=False
-    audit(db,user,"delete","user",str(user_id),{"username":x.username})
+    if x.role == "admin":
+        admin_count = db.scalar(select(func.count(User.id)).where(User.role == "admin")) or 0
+        if admin_count <= 1:
+            raise HTTPException(409,"不能删除最后一个管理员")
+    username=x.username
+    db.query(Quote).filter(Quote.created_by == user_id).update(
+        {Quote.created_by: None, Quote.created_by_name_snapshot: username},
+        synchronize_session=False,
+    )
+    db.query(AuditLog).filter(AuditLog.actor_id == user_id).update(
+        {AuditLog.actor_id: None, AuditLog.actor_name_snapshot: username},
+        synchronize_session=False,
+    )
+    mark_target_deleted(db,"user",str(user_id),username)
+    audit(db,user,"delete","user",str(user_id),{"username":username},target_label=username,target_deleted=True)
+    db.delete(x)
     db.commit()
-    return {"ok":True,"active":False,"deleted":False,"mode":"deactivate"}
-
-
-@app.get("/api/admin/compatibility-rules")
-def rules(_:User=Depends(admin_user),db:Session=Depends(get_db)): return [{"id":x.id,"rule_type":x.rule_type,"source_accessory_id":x.source_accessory_id,"target_accessory_id":x.target_accessory_id,"active":x.active} for x in db.scalars(select(CompatibilityRule).order_by(CompatibilityRule.id)).all()]
-
-
-@app.post("/api/admin/compatibility-rules")
-def create_rule(payload:RuleIn,user:User=Depends(admin_user),db:Session=Depends(get_db)):
-    if payload.source_accessory_id==payload.target_accessory_id: raise HTTPException(400,"规则两端不能是同一配件")
-    if not db.get(Accessory,payload.source_accessory_id) or not db.get(Accessory,payload.target_accessory_id): raise HTTPException(400,"配件不存在")
-    if payload.rule_type=="requires" and db.scalar(select(CompatibilityRule).where(CompatibilityRule.rule_type=="requires",CompatibilityRule.source_accessory_id==payload.target_accessory_id,CompatibilityRule.target_accessory_id==payload.source_accessory_id)): raise HTTPException(400,"检测到循环依赖")
-    x=CompatibilityRule(**payload.model_dump());db.add(x);db.flush();audit(db,user,"create","compatibility_rule",str(x.id),payload.model_dump());db.commit();return {"id":x.id}
-
-
-@app.patch("/api/admin/compatibility-rules/{rule_id}")
-def update_rule(rule_id:int,payload:RuleIn,user:User=Depends(admin_user),db:Session=Depends(get_db)):
-    x=db.get(CompatibilityRule,rule_id)
-    if not x: raise HTTPException(404,"规则不存在")
-    if payload.source_accessory_id==payload.target_accessory_id: raise HTTPException(400,"规则两端不能是同一配件")
-    if not db.get(Accessory,payload.source_accessory_id) or not db.get(Accessory,payload.target_accessory_id): raise HTTPException(400,"配件不存在")
-    if payload.rule_type=="requires" and db.scalar(select(CompatibilityRule).where(CompatibilityRule.id!=rule_id,CompatibilityRule.rule_type=="requires",CompatibilityRule.source_accessory_id==payload.target_accessory_id,CompatibilityRule.target_accessory_id==payload.source_accessory_id)): raise HTTPException(400,"检测到循环依赖")
-    for key,value in payload.model_dump().items(): setattr(x,key,value)
-    audit(db,user,"update","compatibility_rule",str(rule_id),payload.model_dump());db.commit();return {"ok":True}
-
-@app.delete("/api/admin/compatibility-rules/{rule_id}")
-def delete_rule(rule_id:int,user:User=Depends(admin_user),db:Session=Depends(get_db)):
-    x=db.get(CompatibilityRule,rule_id)
-    if not x: raise HTTPException(404,"规则不存在")
-    audit(db,user,"delete","compatibility_rule",str(rule_id),{"rule_type":x.rule_type,"source_accessory_id":x.source_accessory_id,"target_accessory_id":x.target_accessory_id})
-    db.delete(x);db.commit();return {"ok":True}
+    return {"ok":True,"deleted":True,"id":user_id}
 
 
 @app.get("/api/admin/quotes")
 def admin_quotes(_:User=Depends(admin_user),db:Session=Depends(get_db)):
-    users={x.id:x.username for x in db.scalars(select(User)).all()}; return [{"quote_no":x.quote_no,"created_at":x.created_at.isoformat(),"valid_until":x.valid_until.isoformat(),"status":quote_status(x),"final_price":str(x.final_price),"username":users.get(x.created_by)} for x in db.scalars(select(Quote).order_by(Quote.id.desc())).all()]
+    users={x.id:x.username for x in db.scalars(select(User)).all()}; return [{"quote_no":x.quote_no,"created_at":x.created_at.isoformat(),"valid_until":x.valid_until.isoformat(),"status":quote_status(x),"final_price":str(x.final_price),"username":x.created_by_name_snapshot or users.get(x.created_by) or "已删除账号"} for x in db.scalars(select(Quote).order_by(Quote.id.desc())).all()]
 
 
 @app.get("/api/admin/quotes/{quote_no}")
@@ -738,13 +975,17 @@ def void_quote(quote_no:str,user:User=Depends(admin_user),db:Session=Depends(get
 def delete_quote(quote_no:str,user:User=Depends(admin_user),db:Session=Depends(get_db)):
     x=db.scalar(select(Quote).where(Quote.quote_no==quote_no))
     if not x: raise HTTPException(404,"报价单不存在")
-    audit(db,user,"delete","quote",quote_no,{"final_price":str(x.final_price)})
-    db.delete(x); db.commit(); return {"ok":True}
+    mark_target_deleted(db,"quote",quote_no,quote_no)
+    audit(db,user,"delete","quote",quote_no,{"final_price":str(x.final_price)},target_label=quote_no,target_deleted=True)
+    db.delete(x); db.commit(); return {"ok":True,"deleted":True,"id":quote_no}
 
 
 @app.get("/api/admin/audit-logs")
 def audit_logs(_:User=Depends(admin_user),db:Session=Depends(get_db)):
-    users={x.id:x.username for x in db.scalars(select(User)).all()};return [{"id":x.id,"username":users.get(x.actor_id),"action":x.action,"target_type":x.target_type,"target_id":x.target_id,"detail":x.detail,"created_at":x.created_at.isoformat()} for x in db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(200)).all()]
+    users={x.id:x.username for x in db.scalars(select(User)).all()}
+    actions={"create":"新增","update":"修改","delete":"删除","void":"作废","replace":"替换配件","upload":"上传","test":"试算","login":"登录","logout":"退出"}
+    targets={"user":"账号","settings":"计价参数","body":"主体","accessory":"配件","bundle":"套装","compatibility_rule":"兼容规则","quote":"报价单","image":"图片","pricing":"计价试算","session":"会话"}
+    return [{"id":x.id,"username":x.actor_name_snapshot or users.get(x.actor_id) or "已删除账号","action":x.action,"action_label":actions.get(x.action,x.action),"target_type":x.target_type,"target_type_label":targets.get(x.target_type,x.target_type),"target_id":x.target_id,"target_label":x.target_label,"target_deleted":x.target_deleted,"detail":x.detail,"created_at":x.created_at.isoformat()} for x in db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(200)).all()]
 
 
 @app.delete("/api/admin/audit-logs")
@@ -784,9 +1025,10 @@ def delete_upload(filename:str,user:User=Depends(admin_user),db:Session=Depends(
         raise HTTPException(409,"图片仍被主体或配件使用，不能删除")
     deleted=remove_uploaded_file(f"/uploads/{name}")
     if deleted:
-        audit(db,user,"delete","image",name,{"reason":"unbound_upload_cleanup"})
+        mark_target_deleted(db,"image",name,name)
+        audit(db,user,"delete","image",name,{"reason":"unbound_upload_cleanup"},target_label=name,target_deleted=True)
         db.commit()
-    return {"ok":True,"deleted":deleted}
+    return {"ok":True,"deleted":deleted,"id":name}
 
 
 @app.post("/api/admin/pricing-test")
