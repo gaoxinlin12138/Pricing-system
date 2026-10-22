@@ -438,6 +438,7 @@ tar xzf /www/backup/uploads-2026-10-22.tgz -C /www/wwwroot/pricing/backend
 | 现象 | 处理 |
 |---|---|
 | `systemctl status` 里 exit 1 | `journalctl -u pricing -n 80` 看 Python 报错，多半是 DATABASE_URL 或依赖没装全 |
+| 日志里 `address already in use`（8001） | 8001 被别的服务（比如机器人后端）占用：换 8011，改 systemd 的 `--port 8011` 和 Nginx 两处 `proxy_pass`，`systemctl daemon-reload && systemctl restart pricing`、`nginx -t && nginx -s reload` |
 | 502 Bad Gateway | 后端没起来或端口不是 8001，`curl -I 127.0.0.1:8001/openapi.json` 验证 |
 | 页面能开、接口 404 | 宝塔只配了静态没配 `/api` 反代，或反代路径写成了 `/api/` 与 `/api` 不一致 |
 | 登录后立刻变回登录页 | `COOKIE_SECURE` 与访问协议不一致 |
