@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { api, formatDate, money, statusLabel, type QuoteDetail, type QuoteSummary } from '../../api'
+import { confirmDialog } from '../../ui/confirm'
 import { toast } from '../../ui/toast'
 import AppModal from '../AppModal.vue'
 
@@ -33,7 +34,13 @@ async function open(quoteNo: string) {
 }
 
 async function voidQuote(quoteNo: string) {
-  if (!window.confirm(`确定作废报价单 ${quoteNo} 吗？`)) return
+  const confirmed = await confirmDialog({
+    title: '作废报价单',
+    message: `确定作废报价单 ${quoteNo} 吗？作废后不能再作为有效报价使用。`,
+    confirmText: '作废',
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     await api(`/api/admin/quotes/${quoteNo}/void`, { method: 'POST' })
     toast('报价单已作废', 'ok')
@@ -44,7 +51,13 @@ async function voidQuote(quoteNo: string) {
 }
 
 async function remove(quoteNo: string) {
-  if (!window.confirm(`确定删除报价单 ${quoteNo} 吗？删除后无法恢复。`)) return
+  const confirmed = await confirmDialog({
+    title: '删除报价单',
+    message: `确定删除报价单 ${quoteNo} 吗？删除后无法恢复。`,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     await api(`/api/admin/quotes/${quoteNo}`, { method: 'DELETE' })
     toast('报价单已删除', 'ok')
@@ -83,7 +96,7 @@ function statusClass(status: string) {
         <div v-if="filtered.length" class="table-wrap">
           <table class="table">
             <thead>
-              <tr><th>报价单</th><th>套装</th><th>员工</th><th>状态</th><th class="num">售价</th><th>创建时间</th><th class="actions">操作</th></tr>
+              <tr><th>报价单</th><th>套装</th><th>员工</th><th>状态</th><th class="num">套数</th><th class="num">总价</th><th>创建时间</th><th class="actions">操作</th></tr>
             </thead>
             <tbody>
               <tr v-for="quote in filtered" :key="quote.quote_no">
@@ -91,6 +104,7 @@ function statusClass(status: string) {
                 <td>{{ quote.bundle_name || '—' }}</td>
                 <td>{{ quote.username || '—' }}</td>
                 <td><span class="badge" :class="statusClass(quote.status)">{{ statusLabel(quote.status) }}</span></td>
+                <td class="num">{{ quote.set_quantity || 1 }}</td>
                 <td class="num">¥ {{ money(quote.final_price) }}</td>
                 <td class="muted">{{ formatDate(quote.created_at) }}</td>
                 <td class="actions">
@@ -123,6 +137,7 @@ function statusClass(status: string) {
           <span class="badge">{{ detail.bundle?.name || '自定义组合' }}</span>
           <span v-if="detail.bundle?.code" class="badge mono">{{ detail.bundle.code }}</span>
           <span class="badge">主体：{{ detail.body?.name }}</span>
+          <span class="badge">{{ detail.set_quantity || 1 }} 套</span>
           <span class="badge">有效期至 {{ formatDate(detail.valid_until) }}</span>
         </div>
         <div class="item-list">
@@ -140,12 +155,16 @@ function statusClass(status: string) {
           <span>{{ (detail.replacements || []).map((item) => `${item.original_name} → ${item.replacement_name}`).join('，') }}</span>
         </div>
         <div class="summary-line">
-          <span>最终对外售价</span>
-          <b style="font-size: 20px; color: var(--brand-ink)">¥ {{ money(detail.final_price) }}</b>
+          <span>单套售价</span>
+          <b>¥ {{ money(detail.unit_price || detail.final_price) }}</b>
         </div>
-        <div v-if="Number(detail.discount_value) > 0" class="summary-line">
-          <span>折扣</span>
-          <b>{{ detail.discount_type === 'percent' ? `${(Number(detail.discount_value) * 100).toFixed(0)}%` : `¥ ${money(detail.discount_value)}` }}</b>
+        <div class="summary-line">
+          <span>套数</span>
+          <b>{{ detail.set_quantity || 1 }} 套</b>
+        </div>
+        <div class="summary-line">
+          <span>最终总价</span>
+          <b style="font-size: 20px; color: var(--brand-ink)">¥ {{ money(detail.final_price) }}</b>
         </div>
       </div>
     </AppModal>

@@ -22,15 +22,26 @@ def admin_client() -> TestClient:
 
 def catalog_for_quote(client: TestClient) -> tuple[int, int]:
     body = client.post(
-        "/api/admin/bodies",
-        json={"name": "测试主体", "model": "TEST-BODY", "description": "", "cost": 100, "active": True},
+        "/api/admin/accessories",
+        json={
+            "name": "测试主体",
+            "model": "TEST-BODY",
+            "category": "主体",
+            "description": "",
+            "attributes": {},
+            "cost": 100,
+            "default_qty": 1,
+            "min_qty": 1,
+            "max_qty": 1,
+            "active": True,
+        },
     )
     accessory = client.post(
         "/api/admin/accessories",
         json={
             "name": "测试配件",
             "model": "TEST-ACC",
-            "category": "手喷",
+            "category": "花洒喷头",
             "attributes": {},
             "cost": 10,
             "default_qty": 1,
@@ -98,17 +109,17 @@ def test_hard_delete_user_preserves_quote_and_audit_snapshots():
 def test_bundle_quote_replacement_and_reference_guards():
     admin = admin_client()
     body_id, accessory_id = catalog_for_quote(admin)
-    second = admin.post("/api/admin/accessories", json={"name":"替换配件","model":"TEST-ACC-2","category":"手喷","attributes":{},"cost":20,"default_qty":1,"min_qty":0,"max_qty":2,"active":True}).json()
+    second = admin.post("/api/admin/accessories", json={"name":"替换配件","model":"TEST-ACC-2","category":"花洒喷头","attributes":{},"cost":20,"default_qty":1,"min_qty":0,"max_qty":2,"active":True}).json()
     bundle = admin.post("/api/admin/bundles", json={"name":"测试套装","description":"说明","body_id":body_id,"active":True,"items":[{"accessory_id":accessory_id,"quantity":1,"position":1}]}).json()
     assert bundle["name"] == "测试套装"
-    assert admin.patch(f"/api/admin/bodies/{body_id}", json={"name":"测试主体","model":"TEST-BODY","description":"","cost":100,"active":False}).status_code == 409
+    assert admin.patch(f"/api/admin/accessories/{body_id}", json={"name":"测试主体","model":"TEST-BODY","category":"主体","description":"","attributes":{},"cost":100,"default_qty":1,"min_qty":1,"max_qty":1,"active":False}).status_code == 409
     assert admin.delete(f"/api/admin/accessories/{accessory_id}").status_code == 409
 
     employee = TestClient(app)
     assert employee.post("/api/auth/login", json={"username": "employee", "password": "employee123"}).status_code == 200
     detail = employee.get(f"/api/catalog/bundles/{bundle['id']}").json()
     assert "cost" not in detail["body"]
-    assert second["id"] in [x["id"] for x in detail["replacement_candidates"]["手喷"]]
+    assert second["id"] in [x["id"] for x in detail["replacement_candidates"]["花洒喷头"]]
     quote = employee.post("/api/quotes", json={"bundle_id": bundle["id"], "lines": [{"bundle_item_id": bundle["items"][0]["id"], "accessory_id": second["id"], "quantity": 1}]}).json()
     saved_detail = employee.get(f"/api/quotes/{quote['quote_no']}").json()
     assert saved_detail["bundle"]["id"] == bundle["id"]
@@ -118,7 +129,7 @@ def test_bundle_quote_replacement_and_reference_guards():
     assert duplicated.status_code == 200
 
     assert admin.delete(f"/api/admin/bundles/{bundle['id']}").json()["deleted"] is True
-    assert admin.delete(f"/api/admin/bodies/{body_id}").json()["deleted"] is True
+    assert admin.delete(f"/api/admin/accessories/{body_id}").json()["deleted"] is True
     assert admin.delete(f"/api/admin/accessories/{accessory_id}").json()["deleted"] is True
     assert any(row["quote_no"] == quote["quote_no"] for row in admin.get("/api/admin/quotes").json())
 
@@ -174,11 +185,72 @@ def test_shared_upload_is_removed_only_after_last_reference():
     image = TEST_UPLOAD_DIR / "shared.png"
     image.write_bytes(b"test-image")
     image_url = "/uploads/shared.png"
-    payload = {"name": "图片主体", "model": "IMG", "image_url": image_url, "description": "", "cost": 1, "active": True}
-    first = admin.post("/api/admin/bodies", json=payload).json()
-    second = admin.post("/api/admin/bodies", json={**payload, "model": "IMG-2"}).json()
+    payload = {"name": "图片主体", "model": "IMG", "category": "主体", "image_url": image_url, "description": "", "attributes": {}, "cost": 1, "default_qty": 1, "min_qty": 1, "max_qty": 1, "active": True}
+    first = admin.post("/api/admin/accessories", json=payload).json()
+    second = admin.post("/api/admin/accessories", json={**payload, "model": "IMG-2"}).json()
 
-    assert admin.delete(f"/api/admin/bodies/{first['id']}").status_code == 200
+    assert admin.delete(f"/api/admin/accessories/{first['id']}").status_code == 200
     assert image.exists()
-    assert admin.delete(f"/api/admin/bodies/{second['id']}").status_code == 200
+    assert admin.delete(f"/api/admin/accessories/{second['id']}").status_code == 200
     assert not image.exists()
+
+
+def test_quote_price_uses_accessory_and_set_quantity():
+    admin = admin_client()
+    body_id, accessory_id = catalog_for_quote(admin)
+    employee = TestClient(app)
+    assert employee.post("/api/auth/login", json={"username": "employee", "password": "employee123"}).status_code == 200
+    quote = employee.post(
+        "/api/quotes",
+        json={"body_id": body_id, "lines": [{"accessory_id": accessory_id, "quantity": 2}], "set_quantity": 2},
+    ).json()
+    # 配件总成本 = 单件 10 × 数量 2 = 20；单套 = (100 + 20 + 80) × 1.5 = 300；2 套总计 600
+    assert quote["set_quantity"] == 2
+    assert quote["unit_price"] == "300.00"
+    assert quote["final_price"] == "600.00"
+    detail = employee.get(f"/api/quotes/{quote['quote_no']}").json()
+    assert detail["set_quantity"] == 2
+    assert detail["unit_price"] == "300.00"
+    assert "discount_type" not in detail
+    assert "discount_value" not in detail
+    summary = next(row for row in employee.get("/api/quotes").json() if row["quote_no"] == quote["quote_no"])
+    assert summary["set_quantity"] == 2
+    assert summary["unit_price"] == "300.00"
+    assert summary["final_price"] == "600.00"
+
+    settings = admin.get("/api/admin/pricing-settings").json()
+    assert "tax_rate_percent" not in settings
+    assert "max_discount_percent" not in settings
+    assert "minimum_price" not in settings
+    assert "freight" not in settings
+
+
+def test_numeric_attribute_gets_unit_appended():
+    admin = admin_client()
+    payload = {
+        "name": "单位测试杆",
+        "model": "UNIT-TEST",
+        "category": "杆子",
+        "description": "",
+        "attributes": {"长度": "500", "厚度/重量": "2.5", "形状": "方杆"},
+        "cost": 1,
+        "default_qty": 1,
+        "min_qty": 1,
+        "max_qty": 1,
+        "active": True,
+    }
+    created = admin.post("/api/admin/accessories", json=payload)
+    assert created.status_code == 200
+    row = created.json()
+    assert row["attributes"]["长度"] == "500mm"
+    assert row["attributes"]["厚度/重量"] == "2.5mm"
+    assert row["attributes"]["形状"] == "方杆"
+
+    updated = admin.patch(
+        f"/api/admin/accessories/{row['id']}",
+        json={**payload, "attributes": {"长度": "600mm", "厚度/重量": "3"}},
+    ).json()
+    assert updated["attributes"]["长度"] == "600mm"
+    assert updated["attributes"]["厚度/重量"] == "3mm"
+
+    assert admin.delete(f"/api/admin/accessories/{row['id']}").status_code == 200

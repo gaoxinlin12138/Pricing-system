@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { api, imageSrc, money, roundMoney, type Accessory, type AdminBundle, type Body, type CategorySchema, type PricingSettings } from '../../api'
+import { confirmDialog } from '../../ui/confirm'
 import { toast } from '../../ui/toast'
 import AppModal from '../AppModal.vue'
+import AppSelect from '../AppSelect.vue'
 import ImageField from './ImageField.vue'
 
 const props = defineProps<{
@@ -17,20 +19,19 @@ const emit = defineEmits<{ (event: 'changed'): void }>()
 interface DraftItem {
   accessory_id: number
   quantity: number
-  /** 该行预置的配件类别；空字符串表示“其它配件”行（不限类别） */
+  /** 该行预置的配件类型（含“主体”） */
   category: string
 }
 
 const query = ref('')
 const editing = ref(false)
 const busy = ref(false)
-const form = reactive<{ id: number; name: string; code: string; description: string; image_url: string; body_id: number; active: boolean; items: DraftItem[] }>({
+const form = reactive<{ id: number; name: string; code: string; description: string; image_url: string; active: boolean; items: DraftItem[] }>({
   id: 0,
   name: '',
   code: '',
   description: '',
   image_url: '',
-  body_id: 0,
   active: true,
   items: [],
 })
@@ -43,24 +44,29 @@ const filtered = computed(() => {
 
 const activeBodies = computed(() => props.bodies.filter((body) => body.active !== false))
 
-const selectedBody = computed(() => props.bodies.find((body) => body.id === form.body_id) || null)
+const bodyRow = computed(() => form.items.find((item) => item.category === '主体') || null)
 
 const accessoryById = computed(() => new Map(props.accessories.map((item) => [item.id, item])))
 
 const allCategories = computed(() => {
   const fromSchema = props.schema.map((item) => item.category)
   const fromAccessories = props.accessories.map((item) => item.category)
-  return Array.from(new Set(['', ...fromSchema, ...fromAccessories])).filter(Boolean) as string[]
+  // 类型顺序以产品资料表为准；“主体”也是其中一行，且排在最前。
+  return Array.from(new Set([...fromSchema, ...fromAccessories])).filter(Boolean) as string[]
 })
 
 function categoryOf(accessoryId: number): string {
   return accessoryById.value.get(accessoryId)?.category || ''
 }
 
-function buildRows(selected: Array<{ accessory_id: number; quantity: number }>): DraftItem[] {
+function buildRows(selected: Array<{ accessory_id: number; quantity: number }>, bodyId = 0): DraftItem[] {
   const pool = selected.filter((item) => item.accessory_id)
   const rows: DraftItem[] = []
   for (const category of allCategories.value) {
+    if (category === '主体') {
+      rows.push({ accessory_id: bodyId, quantity: 1, category })
+      continue
+    }
     const index = pool.findIndex((item) => categoryOf(item.accessory_id) === category)
     if (index >= 0) {
       const [match] = pool.splice(index, 1)
@@ -77,12 +83,14 @@ function buildRows(selected: Array<{ accessory_id: number; quantity: number }>):
 
 function optionsFor(index: number) {
   const row = form.items[index]
+  const isBodyRow = row?.category === '主体'
   const chosenElsewhere = new Set(
     form.items
       .filter((item, itemIndex) => itemIndex !== index && item.accessory_id)
       .map((item) => item.accessory_id),
   )
   return props.accessories.filter((item) => {
+    if (isBodyRow ? item.category !== '主体' : item.category === '主体') return false
     if (chosenElsewhere.has(item.id)) return false
     if (item.id === row?.accessory_id) return true
     if (item.active === false) return false
@@ -91,15 +99,29 @@ function optionsFor(index: number) {
   })
 }
 
+function accessoryOptions(index: number) {
+  const row = form.items[index]
+  const isBodyRow = row?.category === '主体'
+  return optionsFor(index).map((accessory) => ({
+    value: accessory.id,
+    label: isBodyRow
+      ? `${accessory.name} · ${accessory.model}`
+      : row?.category
+        ? `${accessory.name}（${accessory.model}）`
+        : `${accessory.category} · ${accessory.name}（${accessory.model}）`,
+    image: imageSrc(accessory.image_url),
+  }))
+}
+
 const estimate = computed(() => {
-  const body = props.bodies.find((item) => item.id === form.body_id)
+  const body = props.bodies.find((item) => item.id === bodyRow.value?.accessory_id)
   const accessoryTotal = form.items.reduce((total, item) => {
+    if (item.category === '主体') return total
     const accessory = accessoryById.value.get(item.accessory_id)
     return total + Number(accessory?.cost || 0) * Number(item.quantity || 0)
   }, 0)
   const subtotal = Number(body?.cost || 0) + accessoryTotal + Number(props.settings.labor_fee || 0)
-  const exTax = subtotal * Number(props.settings.multiplier || 1)
-  const final = exTax * (1 + Number(props.settings.tax_rate_percent || 0) / 100) + Number(props.settings.freight || 0)
+  const final = subtotal * Number(props.settings.multiplier || 1)
   return { body: Number(body?.cost || 0), accessoryTotal, subtotal, final }
 })
 
@@ -110,9 +132,8 @@ function openCreate() {
     code: '',
     description: '',
     image_url: '',
-    body_id: activeBodies.value[0]?.id || 0,
     active: true,
-    items: buildRows([]),
+    items: buildRows([], activeBodies.value[0]?.id || 0),
   })
   editing.value = true
 }
@@ -124,19 +145,18 @@ function openEdit(bundle: AdminBundle) {
     code: bundle.code || '',
     description: bundle.description || '',
     image_url: bundle.image_url || '',
-    body_id: bundle.body?.id || 0,
     active: bundle.active !== false,
-    items: buildRows((bundle.items || []).map((item) => ({ accessory_id: item.accessory.id, quantity: Number(item.quantity) }))),
+    items: buildRows(
+      (bundle.items || []).map((item) => ({ accessory_id: item.accessory.id, quantity: Number(item.quantity) })),
+      bundle.body?.id || 0,
+    ),
   })
   editing.value = true
 }
 
-function addItem() {
-  form.items.push({ accessory_id: 0, quantity: 1, category: '' })
-}
-
 function removeItem(index: number) {
   const row = form.items[index]
+  if (row?.category === '主体') return
   if (row?.category) {
     row.accessory_id = 0
     row.quantity = 1
@@ -148,9 +168,10 @@ function removeItem(index: number) {
 async function save() {
   if (busy.value) return
   if (!form.name.trim()) return toast('请填写套装名称', 'err')
-  if (!form.body_id) return toast('请选择主体', 'err')
+  const bodyItem = form.items.find((item) => item.category === '主体')
+  if (!bodyItem?.accessory_id) return toast('请选择主体', 'err')
 
-  const chosen = form.items.filter((item) => item.accessory_id)
+  const chosen = form.items.filter((item) => item.accessory_id && item.category !== '主体')
   if (!chosen.length) return toast('至少选择一个配件，留空的行不会保存', 'err')
   if (chosen.some((item) => Number(item.quantity) < 1)) return toast('配件数量至少为 1', 'err')
   if (new Set(chosen.map((item) => item.accessory_id)).size !== chosen.length) return toast('同一个配件只能出现一次，请用数量表示用量', 'err')
@@ -162,7 +183,7 @@ async function save() {
       code: form.code.trim(),
       description: form.description,
       image_url: form.image_url,
-      body_id: form.body_id,
+      body_id: bodyItem.accessory_id,
       active: form.active,
       items: chosen.map((item, index) => ({
         accessory_id: item.accessory_id,
@@ -184,7 +205,13 @@ async function save() {
   }
 }
 
-async function toggle(bundle: AdminBundle) {
+const pendingBundleId = ref<number | null>(null)
+const pendingBundleActive = ref<boolean | null>(null)
+
+async function setActive(bundle: AdminBundle, active: boolean) {
+  if (pendingBundleId.value !== null || bundle.active === active) return
+  pendingBundleId.value = bundle.id
+  pendingBundleActive.value = active
   try {
     await api(`/api/admin/bundles/${bundle.id}`, {
       method: 'PATCH',
@@ -194,7 +221,7 @@ async function toggle(bundle: AdminBundle) {
         description: bundle.description || '',
         image_url: bundle.image_url || '',
         body_id: bundle.body?.id,
-        active: !bundle.active,
+        active,
         items: (bundle.items || []).map((item, index) => ({
           accessory_id: item.accessory.id,
           quantity: Number(item.quantity),
@@ -202,14 +229,24 @@ async function toggle(bundle: AdminBundle) {
         })),
       }),
     })
+    toast(`套装已${active ? '启用' : '停用'}`, 'ok')
     emit('changed')
   } catch (exception) {
     toast((exception as Error).message, 'err')
+  } finally {
+    pendingBundleId.value = null
+    pendingBundleActive.value = null
   }
 }
 
 async function remove(bundle: AdminBundle) {
-  if (!window.confirm(`确定删除套装「${bundle.name}」吗？历史报价仍会保留当时的快照。`)) return
+  const confirmed = await confirmDialog({
+    title: '删除套装',
+    message: `确定删除套装「${bundle.name}」吗？历史报价仍会保留当时的快照。`,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     await api(`/api/admin/bundles/${bundle.id}`, { method: 'DELETE' })
     toast('套装已删除', 'ok')
@@ -243,7 +280,7 @@ async function remove(bundle: AdminBundle) {
         <div v-if="filtered.length" class="table-wrap">
           <table class="table">
             <thead>
-              <tr><th>套装</th><th>编号</th><th>主体</th><th class="num">物料</th><th>状态</th><th class="actions">操作</th></tr>
+              <tr><th>套装</th><th>编号</th><th>主体</th><th class="num">物料</th><th class="actions">操作</th></tr>
             </thead>
             <tbody>
               <tr v-for="bundle in filtered" :key="bundle.id">
@@ -265,12 +302,26 @@ async function remove(bundle: AdminBundle) {
                 <td class="mono">{{ bundle.code || '—' }}</td>
                 <td>{{ bundle.body?.name }} <span class="muted">· {{ bundle.body?.model }}</span></td>
                 <td class="num">{{ (bundle.items?.length || 0) + 1 }} 件</td>
-                <td><span class="badge" :class="bundle.active ? 'on' : 'off'">{{ bundle.active ? '启用' : '停用' }}</span></td>
                 <td class="actions">
                   <div class="row" style="justify-content: flex-end">
-                    <button class="btn btn-sm" @click="openEdit(bundle)">编辑</button>
-                    <button class="btn btn-sm" @click="toggle(bundle)">{{ bundle.active ? '停用' : '启用' }}</button>
-                    <button class="btn btn-sm btn-danger" @click="remove(bundle)">删除</button>
+                    <button class="btn btn-sm" :disabled="pendingBundleId === bundle.id" @click="openEdit(bundle)">编辑</button>
+                    <button
+                      class="btn btn-sm"
+                      :disabled="pendingBundleId === bundle.id || bundle.active"
+                      :title="bundle.active ? '当前已启用' : '启用'"
+                      @click="setActive(bundle, true)"
+                    >
+                      <span v-if="pendingBundleId === bundle.id && pendingBundleActive === true" class="spinner"></span>启用
+                    </button>
+                    <button
+                      class="btn btn-sm"
+                      :disabled="pendingBundleId === bundle.id || !bundle.active"
+                      :title="!bundle.active ? '当前已停用' : '停用'"
+                      @click="setActive(bundle, false)"
+                    >
+                      <span v-if="pendingBundleId === bundle.id && pendingBundleActive === false" class="spinner"></span>停用
+                    </button>
+                    <button class="btn btn-sm btn-danger" :disabled="pendingBundleId === bundle.id" @click="remove(bundle)">删除</button>
                   </div>
                 </td>
               </tr>
@@ -291,48 +342,28 @@ async function remove(bundle: AdminBundle) {
         <div class="form-grid">
           <label class="field"><span>套装名称</span><input v-model="form.name" class="input" placeholder="例如：星瀑 · 恒温三件套" /></label>
           <label class="field"><span>套装编号 <small>可选</small></span><input v-model="form.code" class="input" placeholder="例如：86148T03WU2" /></label>
-          <label class="field">
-            <span>主体（固定，不参与替换）</span>
-            <select v-model.number="form.body_id" class="input">
-              <option :value="0">请选择主体</option>
-              <option v-for="body in activeBodies" :key="body.id" :value="body.id">{{ body.name }} · {{ body.model }}</option>
-            </select>
-          </label>
           <label class="field full"><span>说明 <small>可选</small></span><textarea v-model="form.description" class="input" placeholder="这套组合适合什么场景"></textarea></label>
           <div class="full"><ImageField v-model="form.image_url" label="套装成品图（用作员工端封面，一张）" /></div>
-          <label class="field full switch"><input v-model="form.active" type="checkbox" /> 启用（员工端可搜索到）</label>
         </div>
 
         <div>
           <div class="row" style="justify-content: space-between; margin-bottom: 8px">
             <span class="field"><span>套装物料（BOM）</span></span>
-            <button type="button" class="btn btn-sm" @click="addItem">＋ 添加其它配件</button>
           </div>
           <p class="page-sub" style="margin-bottom: 10px">
-            已按配件类别各预置一行，直接选择即可；没有的类别留空，保存时会自动跳过。
+            已按配件类型各预置一行；主体为必选行，其它类型留空保存时会自动跳过。
           </p>
-
-          <div class="editor-body">
-            <span class="thumb">
-              <img v-if="selectedBody?.image_url" :src="imageSrc(selectedBody.image_url)" :alt="selectedBody?.name" />
-              <span v-else>◈</span>
-            </span>
-            <div class="item-info">
-              <b>{{ selectedBody?.name || '未选择主体' }} <span class="badge">主体</span></b>
-              <small>{{ selectedBody?.model || '请先选择主体' }}</small>
-            </div>
-            <span class="muted" style="font-size: 12px">固定</span>
-          </div>
 
           <div class="editor-items">
             <div v-for="(item, index) in form.items" :key="index" class="editor-item">
-              <span class="editor-cat" :title="item.category || '其它配件'">{{ item.category || '其它' }}</span>
-              <select v-model.number="item.accessory_id" class="input">
-                <option :value="0">{{ item.category ? `选择${item.category}（可留空）` : '请选择配件' }}</option>
-                <option v-for="accessory in optionsFor(index)" :key="accessory.id" :value="accessory.id">
-                  {{ item.category ? accessory.name : `${accessory.category} · ${accessory.name}` }}（{{ accessory.model }}）
-                </option>
-              </select>
+              <span class="editor-cat" :title="item.category">{{ item.category }}</span>
+              <AppSelect
+                v-model="item.accessory_id"
+                :options="accessoryOptions(index)"
+                :menu-label="`选择${item.category}`"
+                :placeholder="item.category ? `选择${item.category}` : '请选择配件'"
+                :aria-label="item.category === '主体' ? '主体' : `第 ${index + 1} 行配件`"
+              />
               <input
                 v-model.number="item.quantity"
                 class="input"
@@ -340,9 +371,10 @@ async function remove(bundle: AdminBundle) {
                 min="1"
                 step="1"
                 aria-label="数量"
-                :disabled="!item.accessory_id"
+                :disabled="!item.accessory_id || item.category === '主体'"
               />
               <button
+                v-if="item.category !== '主体'"
                 type="button"
                 class="btn btn-sm btn-ghost"
                 :title="item.category ? '清空该类别' : '移除这一行'"
@@ -359,7 +391,7 @@ async function remove(bundle: AdminBundle) {
           <span>
             主体 ¥{{ money(estimate.body) }} · 配件 ¥{{ money(estimate.accessoryTotal) }} · 人工 ¥{{ money(settings.labor_fee) }}
           </span>
-          <span>预估对外售价 <b>¥ {{ roundMoney(estimate.final) }}</b></span>
+          <span>单套预估售价 <b>¥ {{ roundMoney(estimate.final) }}</b></span>
         </div>
       </div>
 

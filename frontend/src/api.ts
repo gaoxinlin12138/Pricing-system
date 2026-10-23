@@ -23,6 +23,7 @@ export interface Accessory {
   model: string
   category: string
   image_url: string
+  description: string
   attributes: Record<string, string>
   default_qty: string
   min_qty: string
@@ -91,8 +92,8 @@ export interface BundleQuotePreview {
     replacement_name: string
     category: string
   }>
-  discount_type: 'percent' | 'amount'
-  discount_value: string
+  set_quantity: number
+  unit_price: string
   final_price: string
   quote_valid_days: number
   quote_no?: string
@@ -107,6 +108,8 @@ export interface QuoteSummary {
   created_at: string
   valid_until: string
   status: string
+  set_quantity: number
+  unit_price: string
   final_price: string
   bundle_name: string
   body_name: string
@@ -124,11 +127,7 @@ export interface QuoteDetail extends Omit<BundleQuotePreview, 'private'> {
 export interface PricingSettings {
   multiplier: string
   labor_fee: string
-  tax_rate_percent: string
-  freight: string
   quote_valid_days: number
-  max_discount_percent: string
-  minimum_price: string
 }
 
 export interface AdminUser {

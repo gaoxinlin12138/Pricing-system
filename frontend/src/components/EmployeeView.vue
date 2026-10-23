@@ -24,6 +24,10 @@ const quotes = ref<QuoteSummary[]>([])
 const loading = ref(true)
 const query = ref('')
 const step = ref(1)
+/** 第二步点击「确认报价」后才允许进入第三步并试算。 */
+const confirmed = ref(false)
+const setCount = ref(1)
+const MAX_SET_COUNT = 99
 
 const selected = ref<BundleDetail | null>(null)
 const draft = reactive<Record<number, { accessory_id: number; quantity: number }>>({})
@@ -34,15 +38,12 @@ const saving = ref(false)
 const savedQuote = ref<{ quote_no: string; final_price: string; valid_until: string } | null>(null)
 
 const replacingItem = ref<BundleItem | null>(null)
-const discountType = ref<'percent' | 'amount'>('percent')
-const discountValue = ref(0)
 
 const quoteDetail = ref<QuoteDetail | null>(null)
 const quoteDetailOpen = ref(false)
 const viewer = ref<{ src: string; title: string; subtitle?: string } | null>(null)
 
 const searchInput = ref<HTMLInputElement | null>(null)
-let previewTimer: number | undefined
 
 const filteredBundles = computed(() => {
   const needle = query.value.trim().toLowerCase()
@@ -84,13 +85,12 @@ function buildPayload() {
   if (!selected.value) return null
   return {
     bundle_id: selected.value.id,
+    set_quantity: setCount.value,
     lines: selected.value.items.map((item) => ({
       bundle_item_id: item.id,
       accessory_id: draft[item.id]?.accessory_id ?? item.accessory.id,
       quantity: draft[item.id]?.quantity ?? Number(item.quantity),
     })),
-    discount_type: discountType.value,
-    discount_value: discountType.value === 'percent' ? discountValue.value / 100 : discountValue.value,
   }
 }
 
@@ -115,8 +115,8 @@ async function openBundle(bundle: BundleSummary) {
     detail.items.forEach((item) => {
       draft[item.id] = { accessory_id: item.accessory.id, quantity: Number(item.quantity) }
     })
-    discountType.value = 'percent'
-    discountValue.value = 0
+    confirmed.value = false
+    setCount.value = 1
     savedQuote.value = null
     preview.value = null
     previewError.value = ''
@@ -128,10 +128,22 @@ async function openBundle(bundle: BundleSummary) {
 }
 
 function backToSearch() {
+  confirmed.value = false
+  setCount.value = 1
   step.value = 1
   selected.value = null
   preview.value = null
   previewError.value = ''
+}
+
+function normalizeSetCount() {
+  const value = Math.round(Number(setCount.value) || 1)
+  setCount.value = Math.min(MAX_SET_COUNT, Math.max(1, value))
+}
+
+function stepSetCount(delta: number) {
+  const current = Math.min(MAX_SET_COUNT, Math.max(1, Math.round(Number(setCount.value) || 1)))
+  setCount.value = Math.min(MAX_SET_COUNT, Math.max(1, current + delta))
 }
 
 function qtyBounds(accessory: Accessory) {
@@ -147,6 +159,7 @@ function clampQuantity(accessory: Accessory, value: number) {
 function setQuantity(itemId: number, value: number, accessory: Accessory) {
   if (!draft[itemId]) return
   draft[itemId].quantity = clampQuantity(accessory, Number(value))
+  confirmed.value = false
   savedQuote.value = null
 }
 
@@ -156,6 +169,7 @@ function applyReplacement(accessory: Accessory) {
   draft[item.id].accessory_id = accessory.id
   draft[item.id].quantity = clampQuantity(accessory, draft[item.id].quantity)
   replacingItem.value = null
+  confirmed.value = false
   savedQuote.value = null
 }
 
@@ -163,18 +177,12 @@ function restoreOriginal(item: BundleItem) {
   if (!draft[item.id]) return
   draft[item.id].accessory_id = item.accessory.id
   draft[item.id].quantity = Number(item.quantity)
+  confirmed.value = false
   savedQuote.value = null
 }
 
-function schedulePreview() {
-  window.clearTimeout(previewTimer)
-  previewError.value = ''
-  previewTimer = window.setTimeout(() => {
-    void runPreview()
-  }, 250)
-}
-
 async function runPreview() {
+  normalizeSetCount()
   const payload = buildPayload()
   if (!payload) return
   previewing.value = true
@@ -189,6 +197,7 @@ async function runPreview() {
 }
 
 async function saveQuote() {
+  normalizeSetCount()
   const payload = buildPayload()
   if (!payload || saving.value) return
   saving.value = true
@@ -212,25 +221,49 @@ async function saveQuote() {
 
 function restart() {
   step.value = 1
+  confirmed.value = false
+  setCount.value = 1
   selected.value = null
   savedQuote.value = null
   preview.value = null
-  discountValue.value = 0
   query.value = ''
 }
 
 function goStep(target: 1 | 2 | 3) {
   if (target === 1) {
-    // 通过步骤条回到搜索时保留当前选择，02/03 仍可直接点回
+    // 通过步骤条回到搜索时保留当前选择，但返回 02 后需要重新确认。
+    confirmed.value = false
     step.value = 1
     return
   }
   if (!selected.value) return
+  if (target === 3 && !confirmed.value) return
+  if (target === 2) confirmed.value = false
   step.value = target
 }
 
-const priceText = computed(() => {
-  if (preview.value) return `¥ ${money(preview.value.final_price)}`
+function confirmQuote() {
+  if (!selected.value) return
+  normalizeSetCount()
+  confirmed.value = true
+  step.value = 3
+}
+
+const unitPrice = computed(() => {
+  if (!preview.value) return null
+  if (preview.value.unit_price) return Number(preview.value.unit_price)
+  const quantity = Number(preview.value.set_quantity) || 1
+  return Number(preview.value.final_price) / quantity
+})
+
+const unitPriceText = computed(() => {
+  if (unitPrice.value !== null) return `¥ ${money(unitPrice.value)}`
+  if (previewError.value) return '—'
+  return previewing.value ? '计算中…' : '—'
+})
+
+const totalPriceText = computed(() => {
+  if (unitPrice.value !== null) return `¥ ${money(unitPrice.value * Math.max(1, setCount.value))}`
   if (previewError.value) return '—'
   return previewing.value ? '计算中…' : '—'
 })
@@ -269,15 +302,9 @@ function onKeydown(event: KeyboardEvent) {
   searchInput.value?.focus()
 }
 
-watch([discountType, discountValue], () => {
-  savedQuote.value = null
-  if (step.value === 3) schedulePreview()
-})
-
 // 第二步不计算价格，避免员工通过反复替换配件反推单件成本；进入第三步才试算。
 watch(step, (value) => {
-  window.clearTimeout(previewTimer)
-  if (value === 3 && selected.value) {
+  if (value === 3 && selected.value && confirmed.value) {
     void runPreview()
     return
   }
@@ -293,7 +320,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown)
-  window.clearTimeout(previewTimer)
 })
 </script>
 
@@ -314,7 +340,13 @@ onBeforeUnmount(() => {
       <button class="step" :class="{ active: step === 2, done: step > 2 }" :disabled="!selected" @click="goStep(2)">
         <span class="step-no">02</span>查看与替换
       </button>
-      <button class="step" :class="{ active: step === 3 }" :disabled="!selected" @click="goStep(3)">
+      <button
+        class="step"
+        :class="{ active: step === 3 }"
+        :disabled="!selected || !confirmed"
+        :title="!selected ? '请先选择套装' : !confirmed ? '请先在第二步确认报价' : '查看最终售价并保存报价单'"
+        @click="goStep(3)"
+      >
         <span class="step-no">03</span>确认并保存报价
       </button>
     </div>
@@ -361,7 +393,7 @@ onBeforeUnmount(() => {
             <div v-else class="empty">
               <span class="empty-icon">✦</span>
               <strong>{{ query ? '没有匹配的套装' : '还没有可报价的套装' }}</strong>
-              <p>{{ query ? '换个关键词试试，或者清空搜索条件。' : '请管理员先在后台「套装」里创建预设套装，员工端就会自动出现。' }}</p>
+              <p>{{ query ? '换个关键词试试，或者清空搜索条件。' : '请管理员先在后台「套装」里创建预设套装，这里就会自动出现。' }}</p>
               <button v-if="query" class="btn btn-sm" @click="query = ''">清空搜索</button>
             </div>
           </template>
@@ -470,9 +502,9 @@ onBeforeUnmount(() => {
               <div>
                 <p class="eyebrow">STEP 03 · 确认报价</p>
                 <h2>{{ selected.name }}</h2>
-                <p class="page-sub">确认套装明细和优惠后保存报价单。保存后原套装保持不变。</p>
+                <p class="page-sub">确认套装明细后保存报价单。保存后原套装保持不变。</p>
               </div>
-              <button class="btn btn-sm" @click="step = 2">← 返回替换</button>
+              <button class="btn btn-sm" @click="goStep(2)">← 返回替换</button>
             </div>
 
             <div class="bom">
@@ -518,26 +550,6 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <hr class="divider" />
-
-            <div class="form-grid">
-              <label class="field">
-                <span>折扣方式</span>
-                <select v-model="discountType" class="input">
-                  <option value="percent">按百分比</option>
-                  <option value="amount">按固定金额</option>
-                </select>
-              </label>
-              <label class="field">
-                <span>{{ discountType === 'percent' ? '折扣（%）' : '减免金额（元）' }}</span>
-                <input v-model.number="discountValue" class="input" type="number" min="0" step="1" />
-              </label>
-            </div>
-
-            <p class="page-sub" style="margin-top: 12px">
-              折扣与最低售价由管理员在「计价参数」中限制；超出范围时右侧会提示具体原因。
-            </p>
-
             <div v-if="savedQuote" class="quick-item" style="margin-top: 20px">
               <div>
                 <b>报价单 {{ savedQuote.quote_no }} 已保存</b>
@@ -555,21 +567,39 @@ onBeforeUnmount(() => {
       <aside class="rail">
         <div v-if="selected" class="card">
           <div class="card-head" style="padding: 14px 20px">
-            <h3 class="card-title">{{ step === 3 ? '最终售价' : '确认报价' }}</h3>
+            <h3 class="card-title">{{ step === 3 ? '报价汇总' : '确认报价' }}</h3>
             <span v-if="step === 3 && previewing" class="badge">计算中…</span>
           </div>
           <div class="card-body">
             <div v-if="step === 3" class="price-box">
-              <span>最终对外售价</span>
-              <strong>{{ priceText }}</strong>
-              <small>含税 · 含运费；员工端不展示成本明细</small>
+              <span>最终总价</span>
+              <strong>{{ totalPriceText }}</strong>
+              <small>单套 {{ unitPriceText }} × {{ setCount }} 套</small>
             </div>
             <div v-else class="price-locked">
               <b>确认报价后显示售价</b>
-              <small>先把配件调整好，再点下方「确认报价」。第二步不试算，避免通过反复替换反推单件成本。</small>
+              <small>请核对配件和数量，确认无误后点击「<span class="nowrap">确认报价</span>」查看最终售价。</small>
             </div>
 
             <p v-if="step === 3 && previewError" class="form-error">{{ previewError }}</p>
+
+            <div v-if="step === 3" class="summary-line set-qty-line">
+              <span>套装套数</span>
+              <div class="set-qty">
+                <button type="button" class="qty-btn" :disabled="setCount <= 1" aria-label="减少一套" @click="stepSetCount(-1)">−</button>
+                <input
+                  v-model.number="setCount"
+                  class="input qty-input"
+                  type="number"
+                  min="1"
+                  :max="MAX_SET_COUNT"
+                  step="1"
+                  aria-label="套装套数"
+                  @change="normalizeSetCount"
+                />
+                <button type="button" class="qty-btn" :disabled="setCount >= MAX_SET_COUNT" aria-label="增加一套" @click="stepSetCount(1)">＋</button>
+              </div>
+            </div>
 
             <div class="summary-line">
               <span>配件数量</span>
@@ -584,7 +614,7 @@ onBeforeUnmount(() => {
               <b>{{ preview.quote_valid_days }} 天</b>
             </div>
 
-            <button v-if="step === 2" class="btn btn-primary btn-block" style="margin-top: 16px" @click="goStep(3)">
+            <button v-if="step === 2" class="btn btn-primary btn-block" style="margin-top: 16px" @click="confirmQuote">
               确认报价 →
             </button>
             <button
@@ -612,7 +642,7 @@ onBeforeUnmount(() => {
               <button v-for="quote in quotes.slice(0, 6)" :key="quote.quote_no" class="history-item" @click="openQuote(quote.quote_no)">
                 <span>
                   <b>{{ quote.bundle_name || '自定义组合' }}</b>
-                  <small>{{ quote.quote_no }} · {{ formatDate(quote.created_at) }}</small>
+                  <small>{{ quote.quote_no }} · {{ quote.set_quantity || 1 }} 套 · {{ formatDate(quote.created_at) }}</small>
                 </span>
                 <b>¥ {{ money(quote.final_price) }}</b>
               </button>
@@ -664,7 +694,7 @@ onBeforeUnmount(() => {
           <span class="badge">{{ quoteDetail.bundle?.name || '自定义组合' }}</span>
           <span v-if="quoteDetail.bundle?.code" class="badge mono">{{ quoteDetail.bundle.code }}</span>
           <span class="badge">主体：{{ quoteDetail.body?.name }}</span>
-          <span v-if="Number(quoteDetail.discount_value) > 0" class="badge">{{ quoteDetail.discount_type === 'percent' ? `折扣 ${(Number(quoteDetail.discount_value) * 100).toFixed(0)}%` : `减免 ${money(quoteDetail.discount_value)} 元` }}</span>
+          <span class="badge">{{ quoteDetail.set_quantity || 1 }} 套</span>
         </div>
 
         <div class="item-list">
@@ -690,7 +720,15 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="summary-line">
-          <span>最终对外售价</span>
+          <span>单套售价</span>
+          <b>¥ {{ money(quoteDetail.unit_price || quoteDetail.final_price) }}</b>
+        </div>
+        <div class="summary-line">
+          <span>套数</span>
+          <b>{{ quoteDetail.set_quantity || 1 }} 套</b>
+        </div>
+        <div class="summary-line">
+          <span>最终总价</span>
           <b style="font-size: 20px; color: var(--brand-ink)">¥ {{ money(quoteDetail.final_price) }}</b>
         </div>
       </div>

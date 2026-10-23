@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { formatDate, money, type BundleSummary, type QuoteSummary } from '../../api'
+import QuoteTrendChart from './QuoteTrendChart.vue'
 
 defineProps<{
   bodyCount: number
@@ -12,8 +13,7 @@ defineProps<{
 const emit = defineEmits<{ (event: 'navigate', tab: string): void }>()
 
 const steps = [
-  { tab: '主体', title: '维护主体', hint: '录入花洒主体的型号与成本' },
-  { tab: '配件', title: '维护配件', hint: '按类别录入配件、属性与成本' },
+  { tab: '配件', title: '维护主体与配件', hint: '按类型录入主体、配件、属性与成本' },
   { tab: '套装', title: '组合预设套装', hint: '自由选择主体 + 配件，员工端即可搜索' },
 ]
 </script>
@@ -24,39 +24,45 @@ const steps = [
       <div>
         <p class="eyebrow">OVERVIEW</p>
         <h1 class="page-title">维护工作台</h1>
-        <p class="page-sub">主体、配件、预设套装与计价参数都在这里维护。</p>
+        <p class="page-sub">配件（含主体）、预设套装与计价参数在这里维护；报价趋势一眼掌握。</p>
       </div>
       <button class="btn" @click="emit('navigate', '套装')">去创建套装</button>
     </div>
 
     <div class="metrics">
       <div class="metric">
-        <span>主体</span>
-        <strong>{{ bodyCount }}</strong>
-        <a href="#" @click.prevent="emit('navigate', '主体')">管理主体 →</a>
-      </div>
-      <div class="metric">
         <span>配件</span>
         <strong>{{ accessoryCount }}</strong>
+        <small class="metric-note">{{ bodyCount ? `含 ${bodyCount} 个主体` : '按类型统一维护' }}</small>
         <a href="#" @click.prevent="emit('navigate', '配件')">管理配件 →</a>
       </div>
       <div class="metric">
         <span>预设套装</span>
         <strong>{{ bundles.length }}</strong>
+        <small class="metric-note">主体 + 配件组合</small>
         <a href="#" @click.prevent="emit('navigate', '套装')">管理套装 →</a>
       </div>
       <div class="metric">
         <span>报价单</span>
         <strong>{{ quotes.length }}</strong>
+        <small class="metric-note">全部历史报价</small>
         <a href="#" @click.prevent="emit('navigate', '报价')">查看报价 →</a>
       </div>
+      <div class="metric">
+        <span>账号管理</span>
+        <strong>{{ userCount }}</strong>
+        <small class="metric-note">管理员与员工账号</small>
+        <a href="#" @click.prevent="emit('navigate', '账号')">管理账号 →</a>
+      </div>
     </div>
+
+    <QuoteTrendChart :quotes="quotes" />
 
     <div class="overview-grid">
       <div class="card">
         <div class="card-head">
           <h2 class="card-title">最近报价</h2>
-          <span class="badge">{{ userCount }} 个账号</span>
+          <span class="badge">{{ quotes.length }} 张</span>
         </div>
         <div class="card-body tight">
           <div v-if="quotes.length" class="table-wrap">

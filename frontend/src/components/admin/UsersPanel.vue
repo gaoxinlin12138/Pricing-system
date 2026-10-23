@@ -1,11 +1,18 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
 import { api, formatDate, type AdminUser } from '../../api'
+import { confirmDialog } from '../../ui/confirm'
 import { toast } from '../../ui/toast'
 import AppModal from '../AppModal.vue'
+import AppSelect from '../AppSelect.vue'
 
 const props = defineProps<{ users: AdminUser[]; currentUser: string }>()
 const emit = defineEmits<{ (event: 'changed'): void }>()
+
+const roleOptions = [
+  { value: 'employee', label: '员工' },
+  { value: 'admin', label: '管理员' },
+]
 
 const editing = ref(false)
 const busy = ref(false)
@@ -48,7 +55,13 @@ async function save() {
 }
 
 async function remove(user: AdminUser) {
-  if (!window.confirm(`确定删除账号「${user.username}」吗？该账号的报价记录会保留用户名快照。`)) return
+  const confirmed = await confirmDialog({
+    title: '删除账号',
+    message: `确定删除账号「${user.username}」吗？该账号的报价记录会保留用户名快照。`,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     await api(`/api/admin/users/${user.id}`, { method: 'DELETE' })
     toast('账号已删除', 'ok')
@@ -110,10 +123,7 @@ async function remove(user: AdminUser) {
         <label class="field"><span>密码 <small v-if="form.id">留空不修改</small></span><input v-model="form.password" class="input" type="password" autocomplete="new-password" /></label>
         <label class="field">
           <span>角色</span>
-          <select v-model="form.role" class="input">
-            <option value="employee">员工</option>
-            <option value="admin">管理员</option>
-          </select>
+          <AppSelect v-model="form.role" :options="roleOptions" placeholder="请选择角色" aria-label="角色" />
         </label>
         <label class="field switch" style="align-self: end; padding-bottom: 8px"><input v-model="form.active" type="checkbox" /> 启用</label>
       </div>

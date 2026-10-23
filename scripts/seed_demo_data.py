@@ -1,10 +1,34 @@
-"""一次性演示数据：通过 API 创建配件与预设套装（可在后台删除）。"""
+"""一次性演示数据：通过 API 创建主体、配件与预设套装（可在后台删除）。"""
+
+import os
 
 import httpx
 
-BASE = "http://127.0.0.1:8002"
+BASE = os.getenv("PRICING_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
 
 ACCESSORIES = [
+    {
+        "name": "星瀑花洒主体",
+        "model": "SH-001",
+        "category": "主体",
+        "cost": 680,
+        "description": "304不锈钢主体，适配多种出水组合",
+        "attributes": {},
+        "default_qty": 1,
+        "min_qty": 1,
+        "max_qty": 1,
+    },
+    {
+        "name": "雾幕花洒主体",
+        "model": "SH-002",
+        "category": "主体",
+        "cost": 520,
+        "description": "圆润极简主体，适合现代卫浴空间",
+        "attributes": {},
+        "default_qty": 1,
+        "min_qty": 1,
+        "max_qty": 1,
+    },
     {
         "name": "方形不锈钢杆",
         "model": "GZ-220",
@@ -38,7 +62,7 @@ ACCESSORIES = [
     {
         "name": "三档手喷",
         "model": "SP-330",
-        "category": "手喷",
+        "category": "花洒喷头",
         "cost": 32,
         "attributes": {"颜色": "黑", "档位": "三档", "尺寸大小": "110mm", "是否防爆": "是"},
         "default_qty": 1,
@@ -48,7 +72,7 @@ ACCESSORIES = [
     {
         "name": "二档手喷",
         "model": "SP-210",
-        "category": "手喷",
+        "category": "花洒喷头",
         "cost": 24,
         "attributes": {"颜色": "银", "档位": "二档", "尺寸大小": "95mm"},
         "default_qty": 1,
@@ -58,7 +82,7 @@ ACCESSORIES = [
     {
         "name": "圆形顶喷",
         "model": "DP-250",
-        "category": "顶喷",
+        "category": "花洒喷头",
         "cost": 58,
         "attributes": {"颜色": "黑", "形状": "圆形", "尺寸大小": "250mm", "档位": "无档"},
         "default_qty": 1,
@@ -68,7 +92,7 @@ ACCESSORIES = [
     {
         "name": "方形顶喷",
         "model": "DP-300",
-        "category": "顶喷",
+        "category": "花洒喷头",
         "cost": 76,
         "attributes": {"颜色": "银", "形状": "方形", "尺寸大小": "300mm"},
         "default_qty": 1,
@@ -108,7 +132,7 @@ ACCESSORIES = [
     {
         "name": "大置物弯角角阀",
         "model": "JV-08",
-        "category": "弯角角阀",
+        "category": "弯角角盘",
         "cost": 35,
         "attributes": {"角阀颜色": "银", "弯角型号": "大置物弯角", "弯角材质": "铜弯角"},
         "default_qty": 1,
@@ -155,7 +179,7 @@ def main() -> None:
         response.raise_for_status()
         existing_accessories[item["model"]] = response.json()
 
-    bodies = {row["model"]: row for row in client.get("/api/admin/bodies").json()}
+    bodies = {row["model"]: row for row in existing_accessories.values() if row["category"] == "主体"}
     existing_bundles = {row["name"] for row in client.get("/api/admin/bundles").json()}
 
     for bundle in BUNDLES:

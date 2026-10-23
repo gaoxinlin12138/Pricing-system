@@ -5,6 +5,7 @@ import hmac
 import json
 import mimetypes
 import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -39,7 +40,14 @@ login_failures: dict[str, list[datetime]] = {}
 
 # 配件类别字段来自公司当前的产品资料表。字段定义本身不含价格，
 # 仅用于让管理员按类别录入结构化属性；实际属性值仍保存在 accessories.attributes JSON 中。
+BODY_CATEGORY = "主体"
+
 ACCESSORY_CATEGORY_SCHEMAS: list[dict[str, Any]] = [
+    {
+        "category": BODY_CATEGORY,
+        "note": "套装的基础件，每套固定选一个；只维护名称、型号、成本、图片和描述。",
+        "fields": [],
+    },
     {
         "category": "杆子",
         "fields": [
@@ -60,17 +68,8 @@ ACCESSORY_CATEGORY_SCHEMAS: list[dict[str, Any]] = [
         ],
     },
     {
-        "category": "手喷",
-        "fields": [
-            {"key": "颜色", "label": "颜色", "type": "text"},
-            {"key": "形状", "label": "形状", "type": "text"},
-            {"key": "是否防爆", "label": "是否防爆", "type": "text"},
-            {"key": "尺寸大小", "label": "尺寸大小", "type": "text", "unit": "mm"},
-            {"key": "档位", "label": "档位", "type": "select", "options": ["无档", "一档", "二档", "三档", "四档"]},
-        ],
-    },
-    {
-        "category": "顶喷",
+        "category": "花洒喷头",
+        "note": "手喷与顶喷合并为同一类，属性一致，统一按花洒喷头维护。",
         "fields": [
             {"key": "颜色", "label": "颜色", "type": "text"},
             {"key": "形状", "label": "形状", "type": "text"},
@@ -107,7 +106,7 @@ ACCESSORY_CATEGORY_SCHEMAS: list[dict[str, Any]] = [
         ],
     },
     {
-        "category": "弯角角阀",
+        "category": "弯角角盘",
         "fields": [
             {"key": "角阀颜色", "label": "角阀颜色", "type": "text"},
             {"key": "角阀形状", "label": "角阀形状", "type": "text"},
@@ -116,6 +115,22 @@ ACCESSORY_CATEGORY_SCHEMAS: list[dict[str, Any]] = [
         ],
     },
 ]
+
+_NUMBER_ONLY = re.compile(r"\d+(?:\.\d+)?")
+
+
+def normalize_attribute_units(category: str, attributes: dict[str, Any] | None) -> dict[str, str]:
+    """属性里带单位的字段，如果只填了数字就自动补上单位（如 500 -> 500mm）。"""
+    schema = next((item for item in ACCESSORY_CATEGORY_SCHEMAS if item["category"] == category), None)
+    units = {field["key"]: field["unit"] for field in (schema or {}).get("fields", []) if field.get("unit")}
+    result: dict[str, str] = {}
+    for key, value in (attributes or {}).items():
+        text = str(value).strip() if value is not None else ""
+        unit = units.get(key)
+        if unit and _NUMBER_ONLY.fullmatch(text):
+            text = f"{text}{unit}"
+        result[key] = text
+    return result
 
 
 class Base(DeclarativeBase):
@@ -134,6 +149,9 @@ class User(Base):
 
 
 class Body(Base):
+    """历史遗留表：0001 迁移用当前模型建库，需要保留它才能让旧迁移链在全新数据库上跑通。
+    运行期数据已全部迁到 Accessory（category = "主体"），业务代码不再读写这张表。"""
+
     __tablename__ = "bodies"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
@@ -153,6 +171,7 @@ class Accessory(Base):
     model: Mapped[str] = mapped_column(String(80))
     category: Mapped[str] = mapped_column(String(80))
     image_url: Mapped[str] = mapped_column(String(500), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
     attributes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     cost: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     default_qty: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=1)
@@ -170,7 +189,8 @@ class Bundle(Base):
     code: Mapped[str] = mapped_column(String(80), default="")
     description: Mapped[str] = mapped_column(Text, default="")
     image_url: Mapped[str] = mapped_column(String(500), default="")
-    body_id: Mapped[int] = mapped_column(ForeignKey("bodies.id", ondelete="RESTRICT"), index=True)
+    # 主体已并入配件表（category = "主体"），字段名保留 body_id 以减少调用方改动。
+    body_id: Mapped[int] = mapped_column(ForeignKey("accessories.id", ondelete="RESTRICT"), index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -191,11 +211,7 @@ class PricingSettings(Base):
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
     multiplier: Mapped[Decimal] = mapped_column(Numeric(8, 4), default=Decimal("1.5"))
     labor_fee: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("80"))
-    tax_rate: Mapped[Decimal] = mapped_column(Numeric(8, 4), default=Decimal("0.13"))
-    freight: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("30"))
     quote_valid_days: Mapped[int] = mapped_column(Integer, default=15)
-    max_discount_percent: Mapped[Decimal] = mapped_column(Numeric(8, 4), default=Decimal("0.20"))
-    minimum_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -240,27 +256,13 @@ class LineIn(BaseModel):
 class QuoteIn(BaseModel):
     body_id: int
     lines: list[LineIn] = Field(default_factory=list)
-    discount_type: Literal["percent", "amount"] = "percent"
-    discount_value: Decimal = Field(default=Decimal("0"), ge=0)
+    set_quantity: int = Field(default=1, ge=1, le=99)
 
 
 class SettingsIn(BaseModel):
     multiplier: Decimal = Field(ge=1)
     labor_fee: Decimal = Field(ge=0)
-    tax_rate_percent: Decimal = Field(ge=0, le=100)
-    freight: Decimal = Field(ge=0)
     quote_valid_days: int = Field(ge=1, le=365)
-    max_discount_percent: Decimal = Field(ge=0, le=100)
-    minimum_price: Decimal = Field(ge=0)
-
-
-class BodyIn(BaseModel):
-    name: str
-    model: str
-    image_url: str = ""
-    description: str = ""
-    cost: Decimal = Field(ge=0)
-    active: bool = True
 
 
 class AccessoryIn(BaseModel):
@@ -268,6 +270,7 @@ class AccessoryIn(BaseModel):
     model: str
     category: str
     image_url: str = ""
+    description: str = ""
     attributes: dict[str, str] = Field(default_factory=dict)
     cost: Decimal = Field(ge=0)
     default_qty: Decimal = Field(default=Decimal("0"), ge=0)
@@ -310,8 +313,7 @@ class BundleLineIn(BaseModel):
 class BundleQuoteIn(BaseModel):
     bundle_id: int
     lines: list[BundleLineIn] = Field(min_length=1)
-    discount_type: Literal["percent", "amount"] = "percent"
-    discount_value: Decimal = Field(default=Decimal("0"), ge=0)
+    set_quantity: int = Field(default=1, ge=1, le=99)
 
 
 app = FastAPI(title="星瀑计价平台", version="0.2.0")
@@ -362,16 +364,8 @@ def check_password(password: str, encoded: str) -> bool:
         return False
 
 
-def public_body(row: Body) -> dict[str, Any]:
-    return {"id": row.id, "name": row.name, "model": row.model, "image_url": row.image_url, "description": row.description}
-
-
 def public_accessory(row: Accessory) -> dict[str, Any]:
-    return {"id": row.id, "name": row.name, "model": row.model, "category": row.category, "image_url": row.image_url, "attributes": row.attributes or {}, "default_qty": str(row.default_qty), "min_qty": str(row.min_qty), "max_qty": str(row.max_qty)}
-
-
-def private_body(row: Body) -> dict[str, Any]:
-    return {**public_body(row), "cost": str(rounded(row.cost)), "active": row.active, "version": row.version, "updated_at": row.updated_at.isoformat()}
+    return {"id": row.id, "name": row.name, "model": row.model, "category": row.category, "image_url": row.image_url, "description": row.description or "", "attributes": normalize_attribute_units(row.category, row.attributes), "default_qty": str(row.default_qty), "min_qty": str(row.min_qty), "max_qty": str(row.max_qty)}
 
 
 def private_accessory(row: Accessory) -> dict[str, Any]:
@@ -383,7 +377,7 @@ def _bundle_items(db: Session, bundle_id: int) -> list[BundleItem]:
 
 
 def private_bundle(db: Session, bundle: Bundle) -> dict[str, Any]:
-    body = db.get(Body, bundle.body_id)
+    body = db.get(Accessory, bundle.body_id)
     items = _bundle_items(db, bundle.id)
     accessories = {x.id: x for x in db.scalars(select(Accessory).where(Accessory.id.in_([i.accessory_id for i in items]))).all()} if items else {}
     return {
@@ -395,13 +389,13 @@ def private_bundle(db: Session, bundle: Bundle) -> dict[str, Any]:
         "active": bundle.active,
         "version": bundle.version,
         "updated_at": bundle.updated_at.isoformat(),
-        "body": private_body(body) if body else None,
+        "body": private_accessory(body) if body else None,
         "items": [{"id": i.id, "accessory": private_accessory(accessories[i.accessory_id]), "quantity": str(i.quantity), "position": i.position} for i in items if i.accessory_id in accessories],
     }
 
 
 def public_bundle(db: Session, bundle: Bundle, *, include_replacements: bool = False) -> dict[str, Any]:
-    body = db.get(Body, bundle.body_id)
+    body = db.get(Accessory, bundle.body_id)
     items = _bundle_items(db, bundle.id)
     accessories = {x.id: x for x in db.scalars(select(Accessory).where(Accessory.id.in_([i.accessory_id for i in items]))).all()} if items else {}
     result: dict[str, Any] = {
@@ -411,7 +405,7 @@ def public_bundle(db: Session, bundle: Bundle, *, include_replacements: bool = F
         "description": bundle.description or "",
         "image_url": bundle.image_url or "",
         "version": bundle.version,
-        "body": public_body(body) if body else None,
+        "body": public_accessory(body) if body else None,
         "items": [{"id": i.id, "accessory": public_accessory(accessories[i.accessory_id]), "quantity": str(i.quantity), "position": i.position} for i in items if i.accessory_id in accessories],
     }
     if include_replacements:
@@ -429,9 +423,9 @@ def bundle_references_for_accessory(db: Session, accessory_id: int) -> list[str]
     return [x.name for x in db.scalars(select(Bundle).join(BundleItem, BundleItem.bundle_id == Bundle.id).where(BundleItem.accessory_id == accessory_id).order_by(Bundle.name)).all()]
 
 
-def validate_bundle_payload(payload: BundleIn, db: Session, existing_id: int | None = None) -> tuple[Body, list[Accessory]]:
-    body = db.get(Body, payload.body_id)
-    if not body:
+def validate_bundle_payload(payload: BundleIn, db: Session, existing_id: int | None = None) -> tuple[Accessory, list[Accessory]]:
+    body = db.get(Accessory, payload.body_id)
+    if not body or body.category != BODY_CATEGORY:
         raise HTTPException(400, "主体不存在")
     if payload.active and not body.active:
         raise HTTPException(400, "套装启用时主体必须处于启用状态")
@@ -443,6 +437,8 @@ def validate_bundle_payload(payload: BundleIn, db: Session, existing_id: int | N
         raise HTTPException(400, "套装包含不存在的配件")
     for item in payload.items:
         accessory = accessories[item.accessory_id]
+        if accessory.category == BODY_CATEGORY:
+            raise HTTPException(400, f"{accessory.name} 是主体，不能作为套装配件重复添加")
         if payload.active and not accessory.active:
             raise HTTPException(400, f"配件 {accessory.name} 已停用，不能启用套装")
         if item.quantity < accessory.min_qty or item.quantity > accessory.max_qty:
@@ -527,10 +523,9 @@ def remove_uploaded_file(image_url: str | None, db: Session | None = None) -> bo
     if not name:
         return False
     if db is not None:
-        body_urls = db.scalars(select(Body.image_url).where(Body.image_url != "")).all()
         accessory_urls = db.scalars(select(Accessory.image_url).where(Accessory.image_url != "")).all()
         bundle_urls = db.scalars(select(Bundle.image_url).where(Bundle.image_url != "")).all()
-        if any(upload_filename(url) == name for url in [*body_urls, *accessory_urls, *bundle_urls]):
+        if any(upload_filename(url) == name for url in [*accessory_urls, *bundle_urls]):
             return False
     root = UPLOAD_DIR.resolve()
     target = (root / name).resolve()
@@ -545,7 +540,7 @@ def remove_uploaded_file(image_url: str | None, db: Session | None = None) -> bo
 
 def cleanup_orphan_uploads(db: Session) -> int:
     """Remove files in the upload directory that no catalog record references."""
-    referenced={upload_filename(url) for url in [*db.scalars(select(Body.image_url).where(Body.image_url != "")).all(),*db.scalars(select(Accessory.image_url).where(Accessory.image_url != "")).all(),*db.scalars(select(Bundle.image_url).where(Bundle.image_url != "")).all()]}
+    referenced={upload_filename(url) for url in [*db.scalars(select(Accessory.image_url).where(Accessory.image_url != "")).all(),*db.scalars(select(Bundle.image_url).where(Bundle.image_url != "")).all()]}
     removed=0
     for path in UPLOAD_DIR.iterdir():
         if path.is_file() and path.name not in referenced:
@@ -566,8 +561,11 @@ def seed_if_empty(db: Session) -> None:
     if not os.getenv("INITIAL_ADMIN_PASSWORD"):
         print("警告：未设置 INITIAL_ADMIN_PASSWORD，正在使用内置默认密码，仅限本地开发，请登录后立即修改。", flush=True)
     db.add_all([User(username="admin", password_hash=hash_password(admin_password), role="admin"), User(username="employee", password_hash=hash_password(employee_password), role="employee")])
-    db.add(PricingSettings(id=1, multiplier=Decimal("1.5"), labor_fee=Decimal("80"), tax_rate=Decimal("0.13"), freight=Decimal("30"), quote_valid_days=15, max_discount_percent=Decimal("0.20"), minimum_price=Decimal("0")))
-    bodies = [Body(name="星瀑花洒主体", model="SH-001", description="304不锈钢主体，适配多种出水组合", cost=Decimal("680")), Body(name="雾幕花洒主体", model="SH-002", description="圆润极简主体，适合现代卫浴空间", cost=Decimal("520"))]
+    db.add(PricingSettings(id=1, multiplier=Decimal("1.5"), labor_fee=Decimal("80"), quote_valid_days=15))
+    bodies = [
+        Accessory(name="星瀑花洒主体", model="SH-001", category=BODY_CATEGORY, description="304不锈钢主体，适配多种出水组合", cost=Decimal("680"), default_qty=1, min_qty=1, max_qty=1),
+        Accessory(name="雾幕花洒主体", model="SH-002", category=BODY_CATEGORY, description="圆润极简主体，适合现代卫浴空间", cost=Decimal("520"), default_qty=1, min_qty=1, max_qty=1),
+    ]
     db.add_all(bodies)
     # 真实产品由管理员录入。类别字段由 ACCESSORY_CATEGORY_SCHEMAS 提供，
     # 首次初始化不再写入旧版示例配件，避免员工误用演示成本。
@@ -604,11 +602,14 @@ def me(user: User = Depends(current_user)): return {"username": user.username, "
 
 
 @app.get("/api/catalog/bodies")
-def catalog_bodies(_: User = Depends(current_user), db: Session = Depends(get_db)): return [public_body(x) for x in db.scalars(select(Body).where(Body.active).order_by(Body.id)).all()]
+def catalog_bodies(_: User = Depends(current_user), db: Session = Depends(get_db)):
+    """主体已并入配件表，保留此接口便于旧客户端按主体列表读取。"""
+    return [public_accessory(x) for x in db.scalars(select(Accessory).where(Accessory.active, Accessory.category == BODY_CATEGORY).order_by(Accessory.id)).all()]
 
 
 @app.get("/api/catalog/accessories")
-def catalog_accessories(_: User = Depends(current_user), db: Session = Depends(get_db)): return [public_accessory(x) for x in db.scalars(select(Accessory).where(Accessory.active).order_by(Accessory.category, Accessory.id)).all()]
+def catalog_accessories(_: User = Depends(current_user), db: Session = Depends(get_db)):
+    return [public_accessory(x) for x in db.scalars(select(Accessory).where(Accessory.active, Accessory.category != BODY_CATEGORY).order_by(Accessory.category, Accessory.id)).all()]
 
 
 @app.get("/api/catalog/accessory-schema")
@@ -633,12 +634,12 @@ def catalog_bundles(q: str = "", _: User = Depends(current_user), db: Session = 
     result = []
     for bundle in bundles:
         item_rows = _bundle_items(db, bundle.id)
-        body = db.get(Body, bundle.body_id)
+        body = db.get(Accessory, bundle.body_id)
         accessories = [db.get(Accessory, item.accessory_id) for item in item_rows]
         haystack = " ".join([bundle.name, bundle.description or "", body.name if body else "", body.model if body else "", *[f"{x.name} {x.model}" for x in accessories if x]])
         if needle and needle not in haystack.lower():
             continue
-        result.append({"id": bundle.id, "name": bundle.name, "code": bundle.code or "", "description": bundle.description or "", "image_url": bundle.image_url or "", "version": bundle.version, "body": public_body(body) if body else None, "item_count": len(item_rows)})
+        result.append({"id": bundle.id, "name": bundle.name, "code": bundle.code or "", "description": bundle.description or "", "image_url": bundle.image_url or "", "version": bundle.version, "body": public_accessory(body) if body else None, "item_count": len(item_rows)})
     return result
 
 
@@ -651,7 +652,7 @@ def catalog_bundle_detail(bundle_id: int, _: User = Depends(current_user), db: S
 
 
 def calculate(payload: QuoteIn, db: Session, private: bool = False) -> dict[str, Any]:
-    body = db.scalar(select(Body).where(Body.id == payload.body_id, Body.active))
+    body = db.scalar(select(Accessory).where(Accessory.id == payload.body_id, Accessory.active, Accessory.category == BODY_CATEGORY))
     if not body: raise HTTPException(400, "主体不存在或已停用")
     settings = db.get(PricingSettings, 1)
     ids = [x.accessory_id for x in payload.lines]; rows = {x.id:x for x in db.scalars(select(Accessory).where(Accessory.id.in_(ids), Accessory.active)).all()}
@@ -659,25 +660,17 @@ def calculate(payload: QuoteIn, db: Session, private: bool = False) -> dict[str,
     accessory_total = Decimal("0"); lines = []
     for line in payload.lines:
         row = rows[line.accessory_id]; qty = Decimal(line.quantity)
+        if row.category == BODY_CATEGORY: raise HTTPException(400, f"{row.name} 是主体，不能作为配件计价")
         if qty < row.min_qty or qty > row.max_qty: raise HTTPException(400, f"{row.name} 数量需在 {row.min_qty} 到 {row.max_qty} 之间")
         line_cost = row.cost * qty; accessory_total += line_cost
         item = {"accessory_id":row.id,"name":row.name,"model":row.model,"quantity":str(qty)}
         if private: item["line_cost"] = str(rounded(line_cost))
         lines.append(item)
-    subtotal = body.cost + accessory_total + settings.labor_fee; ex_tax = subtotal * settings.multiplier
-    max_discount_amount = ex_tax * settings.max_discount_percent
-    if payload.discount_type == "percent":
-        if payload.discount_value > settings.max_discount_percent: raise HTTPException(400, "折扣超过管理员允许范围")
-        discount = ex_tax * payload.discount_value
-    else:
-        discount = payload.discount_value
-        if discount > max_discount_amount:
-            raise HTTPException(400, f"固定金额折扣超过管理员允许上限，当前最多可减免 {rounded(max_discount_amount)} 元")
-    discounted = max(Decimal("0"), ex_tax - discount)
-    tax = discounted * settings.tax_rate; final = rounded(discounted + tax + settings.freight)
-    if final < settings.minimum_price: raise HTTPException(400, "最终售价低于管理员设置的最低售价")
-    result = {"body":{"id":body.id,"name":body.name,"model":body.model},"lines":lines,"discount_type":payload.discount_type,"discount_value":str(payload.discount_value),"final_price":str(final),"quote_valid_days":settings.quote_valid_days}
-    if private: result["private"] = {"body_cost":str(rounded(body.cost)),"accessory_total":str(rounded(accessory_total)),"labor_fee":str(rounded(settings.labor_fee)),"subtotal":str(rounded(subtotal)),"multiplier":str(settings.multiplier),"ex_tax_price":str(rounded(ex_tax)),"max_discount_amount":str(rounded(max_discount_amount)),"discount_amount":str(rounded(discount)),"tax_rate":str(settings.tax_rate),"tax":str(rounded(tax)),"freight":str(rounded(settings.freight)),"final_price":str(final)}
+    subtotal = body.cost + accessory_total + settings.labor_fee
+    unit_price = rounded(subtotal * settings.multiplier)
+    final = rounded(unit_price * payload.set_quantity)
+    result = {"body":{"id":body.id,"name":body.name,"model":body.model},"lines":lines,"set_quantity":payload.set_quantity,"unit_price":str(unit_price),"final_price":str(final),"quote_valid_days":settings.quote_valid_days}
+    if private: result["private"] = {"body_cost":str(rounded(body.cost)),"accessory_total":str(rounded(accessory_total)),"labor_fee":str(rounded(settings.labor_fee)),"subtotal":str(rounded(subtotal)),"multiplier":str(settings.multiplier),"unit_price":str(unit_price),"set_quantity":payload.set_quantity,"final_price":str(final)}
     return result
 
 
@@ -685,7 +678,7 @@ def calculate_bundle(payload: BundleQuoteIn, db: Session, private: bool = False)
     bundle = db.get(Bundle, payload.bundle_id)
     if not bundle or not bundle.active:
         raise HTTPException(400, "套装不存在或已停用")
-    body = db.scalar(select(Body).where(Body.id == bundle.body_id, Body.active))
+    body = db.scalar(select(Accessory).where(Accessory.id == bundle.body_id, Accessory.active, Accessory.category == BODY_CATEGORY))
     if not body:
         raise HTTPException(400, "套装主体不存在或已停用")
     items = _bundle_items(db, bundle.id)
@@ -712,7 +705,7 @@ def calculate_bundle(payload: BundleQuoteIn, db: Session, private: bool = False)
         original_items.append({"bundle_item_id": original.id, "accessory_id": original_accessory.id, "name": original_accessory.name, "model": original_accessory.model, "category": original_accessory.category, "quantity": str(original.quantity), "position": original.position})
         if target.id != original_accessory.id:
             replacements.append({"bundle_item_id": original.id, "original_accessory_id": original_accessory.id, "original_name": original_accessory.name, "replacement_accessory_id": target.id, "replacement_name": target.name, "category": target.category})
-    result = calculate(QuoteIn(body_id=body.id, lines=legacy_lines, discount_type=payload.discount_type, discount_value=payload.discount_value), db, private=private)
+    result = calculate(QuoteIn(body_id=body.id, lines=legacy_lines, set_quantity=payload.set_quantity), db, private=private)
     for result_line, source_line in zip(result.get("lines", []), payload.lines):
         result_line["bundle_item_id"] = source_line.bundle_item_id
     result["bundle"] = {"id": bundle.id, "name": bundle.name, "code": bundle.code or "", "version": bundle.version, "description": bundle.description or "", "image_url": bundle.image_url or ""}
@@ -753,7 +746,7 @@ def create_quote(payload: dict[str, Any] | QuoteIn | BundleQuoteIn, user: User =
     if result.get("replacements"):
         audit(db,user,"replace","bundle",str(result["bundle"]["id"]),{"bundle_id":result["bundle"]["id"],"replacements":result["replacements"],"quote_no":no},target_label=result["bundle"]["name"])
     db.commit()
-    return {"quote_no":no,"created_at":created.isoformat(),"valid_until":valid.isoformat(),"status":"saved","final_price":result["final_price"],"body":result["body"],"lines":result["lines"]}
+    return {"quote_no":no,"created_at":created.isoformat(),"valid_until":valid.isoformat(),"status":"saved","set_quantity":result["set_quantity"],"unit_price":result["unit_price"],"final_price":result["final_price"],"body":result["body"],"lines":result["lines"]}
 
 
 def public_quote(quote: Quote) -> dict[str, Any]:
@@ -773,11 +766,14 @@ def _quote_summary(quote: Quote) -> dict[str, Any]:
     snapshot = quote.snapshot or {}
     bundle = snapshot.get("bundle") or {}
     body = snapshot.get("body") or {}
+    set_quantity = int(snapshot.get("set_quantity") or 1)
     return {
         "quote_no": quote.quote_no,
         "created_at": quote.created_at.isoformat(),
         "valid_until": quote.valid_until.isoformat(),
         "status": quote_status(quote),
+        "set_quantity": set_quantity,
+        "unit_price": snapshot.get("unit_price") or str(quote.final_price),
         "final_price": str(quote.final_price),
         "bundle_name": bundle.get("name") or "",
         "body_name": body.get("name") or "",
@@ -797,15 +793,16 @@ def duplicate_quote(quote_no: str, user: User = Depends(current_user), db: Sessi
     quote = db.scalar(select(Quote).where(Quote.quote_no==quote_no, Quote.created_by==user.id));
     if not quote: raise HTTPException(404,"报价单不存在")
     snap = quote.snapshot
+    set_quantity = int(snap.get("set_quantity") or 1)
     if snap.get("bundle", {}).get("id"):
-        payload = BundleQuoteIn(bundle_id=int(snap["bundle"]["id"]), lines=[BundleLineIn(bundle_item_id=int(x["bundle_item_id"]), accessory_id=int(x["accessory_id"]), quantity=Decimal(x["quantity"])) for x in snap.get("lines", [])], discount_type=snap.get("discount_type","percent"), discount_value=Decimal(snap.get("discount_value","0")))
+        payload = BundleQuoteIn(bundle_id=int(snap["bundle"]["id"]), lines=[BundleLineIn(bundle_item_id=int(x["bundle_item_id"]), accessory_id=int(x["accessory_id"]), quantity=Decimal(x["quantity"])) for x in snap.get("lines", [])], set_quantity=set_quantity)
     else:
-        payload = QuoteIn(body_id=snap["body"]["id"], lines=[LineIn(accessory_id=x["accessory_id"],quantity=Decimal(x["quantity"])) for x in snap.get("lines",[])], discount_type=snap.get("discount_type","percent"), discount_value=Decimal(snap.get("discount_value","0")))
+        payload = QuoteIn(body_id=snap["body"]["id"], lines=[LineIn(accessory_id=x["accessory_id"],quantity=Decimal(x["quantity"])) for x in snap.get("lines",[])], set_quantity=set_quantity)
     return create_quote(payload,user,db)
 
 
 def settings_json(s: PricingSettings):
-    return {"multiplier":str(s.multiplier),"labor_fee":str(s.labor_fee),"tax_rate_percent":str(s.tax_rate*100),"freight":str(s.freight),"quote_valid_days":s.quote_valid_days,"max_discount_percent":str(s.max_discount_percent*100),"minimum_price":str(s.minimum_price)}
+    return {"multiplier":str(s.multiplier),"labor_fee":str(s.labor_fee),"quote_valid_days":s.quote_valid_days}
 
 
 @app.get("/api/admin/pricing-settings")
@@ -814,7 +811,7 @@ def get_settings(_: User=Depends(admin_user), db: Session=Depends(get_db)): retu
 
 @app.patch("/api/admin/pricing-settings")
 def update_settings(payload: SettingsIn, user: User=Depends(admin_user), db: Session=Depends(get_db)):
-    s=db.get(PricingSettings,1); s.multiplier=payload.multiplier; s.labor_fee=payload.labor_fee; s.tax_rate=payload.tax_rate_percent/100; s.freight=payload.freight; s.quote_valid_days=payload.quote_valid_days; s.max_discount_percent=payload.max_discount_percent/100; s.minimum_price=payload.minimum_price; s.updated_at=now(); audit(db,user,"update","settings","1",settings_json(s)); db.commit(); return settings_json(s)
+    s=db.get(PricingSettings,1); s.multiplier=payload.multiplier; s.labor_fee=payload.labor_fee; s.quote_valid_days=payload.quote_valid_days; s.updated_at=now(); audit(db,user,"update","settings","1",settings_json(s)); db.commit(); return settings_json(s)
 
 
 @app.get("/api/admin/bundles")
@@ -871,64 +868,55 @@ def delete_bundle(bundle_id: int, user: User = Depends(admin_user), db: Session 
     return {"ok": True, "deleted": True, "id": bundle_id}
 
 
+def accessory_audit_target(row: Accessory | AccessoryIn) -> str:
+    return "body" if row.category == BODY_CATEGORY else "accessory"
+
+
 @app.get("/api/admin/bodies")
-def admin_bodies(_: User=Depends(admin_user), db: Session=Depends(get_db)): return [private_body(x) for x in db.scalars(select(Body).order_by(Body.id)).all()]
-
-
-@app.post("/api/admin/bodies")
-def create_body(payload: BodyIn, user: User=Depends(admin_user), db: Session=Depends(get_db)):
-    x=Body(**payload.model_dump(),updated_at=now()); db.add(x); db.flush(); audit(db,user,"create","body",str(x.id),payload.model_dump()); db.commit(); return private_body(x)
-
-
-@app.patch("/api/admin/bodies/{body_id}")
-def update_body(body_id:int,payload:BodyIn,user:User=Depends(admin_user),db:Session=Depends(get_db)):
-    x=db.get(Body,body_id)
-    if not x: raise HTTPException(404,"主体不存在")
-    if x.active and not payload.active:
-        refs = bundle_references_for_body(db, body_id)
-        if refs: raise HTTPException(409, "主体仍被套装引用，无法停用：" + "、".join(refs))
-    old_image_url=x.image_url
-    for key,value in payload.model_dump().items(): setattr(x,key,value)
-    x.version+=1; x.updated_at=now(); audit(db,user,"update","body",str(body_id),payload.model_dump()); db.commit()
-    remove_uploaded_file(old_image_url, db)
-    return private_body(x)
-
-
-@app.delete("/api/admin/bodies/{body_id}")
-def delete_body(body_id:int,user:User=Depends(admin_user),db:Session=Depends(get_db)):
-    x=db.get(Body,body_id)
-    if not x: raise HTTPException(404,"主体不存在")
-    refs = bundle_references_for_body(db, body_id)
-    if refs: raise HTTPException(409, "主体仍被套装引用，无法删除：" + "、".join(refs))
-    old_image_url=x.image_url
-    mark_target_deleted(db,"body",str(body_id),x.name)
-    audit(db,user,"delete","body",str(body_id),{"name":x.name},target_label=x.name,target_deleted=True)
-    db.delete(x); db.commit()
-    remove_uploaded_file(old_image_url, db)
-    return {"ok":True,"deleted":True,"id":body_id}
+def admin_bodies(_: User=Depends(admin_user), db: Session=Depends(get_db)):
+    """兼容旧客户端：主体已并入 accessories，这里只返回主体类别的记录。"""
+    return [private_accessory(x) for x in db.scalars(select(Accessory).where(Accessory.category == BODY_CATEGORY).order_by(Accessory.id)).all()]
 
 
 @app.get("/api/admin/accessories")
 def admin_accessories(_: User=Depends(admin_user), db: Session=Depends(get_db)): return [private_accessory(x) for x in db.scalars(select(Accessory).order_by(Accessory.category,Accessory.id)).all()]
 
 
+def accessory_values(payload: AccessoryIn) -> dict[str, Any]:
+    values = payload.model_dump()
+    values["category"] = payload.category.strip()
+    if not values["category"]:
+        raise HTTPException(400, "请选择配件类型")
+    if values["category"] == BODY_CATEGORY:
+        # 主体每套固定一个，不需要数量范围，也不保存属性字段。
+        values.update(default_qty=Decimal("1"), min_qty=Decimal("1"), max_qty=Decimal("1"), attributes={})
+    elif values["max_qty"] < values["min_qty"]:
+        raise HTTPException(400, "最大数量不能小于最小数量")
+    values["attributes"] = normalize_attribute_units(values["category"], values["attributes"])
+    return values
+
+
 @app.post("/api/admin/accessories")
 def create_accessory(payload:AccessoryIn,user:User=Depends(admin_user),db:Session=Depends(get_db)):
-    if payload.max_qty < payload.min_qty: raise HTTPException(400,"最大数量不能小于最小数量")
-    x=Accessory(**payload.model_dump(),updated_at=now()); db.add(x); db.flush(); audit(db,user,"create","accessory",str(x.id),payload.model_dump()); db.commit(); return private_accessory(x)
+    values = accessory_values(payload)
+    x=Accessory(**values,updated_at=now()); db.add(x); db.flush(); target=accessory_audit_target(x); audit(db,user,"create",target,str(x.id),values); db.commit(); return private_accessory(x)
 
 
 @app.patch("/api/admin/accessories/{accessory_id}")
 def update_accessory(accessory_id:int,payload:AccessoryIn,user:User=Depends(admin_user),db:Session=Depends(get_db)):
-    if payload.max_qty < payload.min_qty: raise HTTPException(400,"最大数量不能小于最小数量")
+    values = accessory_values(payload)
     x=db.get(Accessory,accessory_id)
     if not x: raise HTTPException(404,"配件不存在")
-    if x.active and not payload.active:
-        refs = bundle_references_for_accessory(db, accessory_id)
-        if refs: raise HTTPException(409, "配件仍被套装引用，无法停用：" + "、".join(refs))
+    item_refs = bundle_references_for_accessory(db, accessory_id)
+    body_refs = bundle_references_for_body(db, accessory_id) if x.category == BODY_CATEGORY else []
+    if x.category != values["category"] and (item_refs or body_refs):
+        raise HTTPException(409, "配件仍被套装引用，无法修改类型：" + "、".join([*item_refs, *body_refs]))
+    if x.active and not values["active"]:
+        refs = [*item_refs, *body_refs]
+        if refs: raise HTTPException(409, "主体/配件仍被套装引用，无法停用：" + "、".join(refs))
     old_image_url=x.image_url
-    for key,value in payload.model_dump().items(): setattr(x,key,value)
-    x.version+=1; x.updated_at=now(); audit(db,user,"update","accessory",str(accessory_id),payload.model_dump()); db.commit()
+    for key,value in values.items(): setattr(x,key,value)
+    x.version+=1; x.updated_at=now(); audit(db,user,"update",accessory_audit_target(x),str(accessory_id),values); db.commit()
     remove_uploaded_file(old_image_url, db)
     return private_accessory(x)
 
@@ -937,11 +925,14 @@ def update_accessory(accessory_id:int,payload:AccessoryIn,user:User=Depends(admi
 def delete_accessory(accessory_id:int,user:User=Depends(admin_user),db:Session=Depends(get_db)):
     x=db.get(Accessory,accessory_id)
     if not x: raise HTTPException(404,"配件不存在")
-    refs = bundle_references_for_accessory(db, accessory_id)
-    if refs: raise HTTPException(409, "配件仍被套装引用，无法删除：" + "、".join(refs))
+    refs = [*bundle_references_for_accessory(db, accessory_id)]
+    if x.category == BODY_CATEGORY:
+        refs += bundle_references_for_body(db, accessory_id)
+    if refs: raise HTTPException(409, "主体/配件仍被套装引用，无法删除：" + "、".join(refs))
     old_image_url=x.image_url
-    mark_target_deleted(db,"accessory",str(accessory_id),x.name)
-    audit(db,user,"delete","accessory",str(accessory_id),{"name":x.name},target_label=x.name,target_deleted=True)
+    target=accessory_audit_target(x)
+    mark_target_deleted(db,target,str(accessory_id),x.name)
+    audit(db,user,"delete",target,str(accessory_id),{"name":x.name},target_label=x.name,target_deleted=True)
     db.delete(x); db.commit()
     remove_uploaded_file(old_image_url, db)
     return {"ok":True,"deleted":True,"id":accessory_id}
@@ -1065,9 +1056,9 @@ def delete_upload(filename:str,user:User=Depends(admin_user),db:Session=Depends(
     name=upload_filename(f"/uploads/{filename}")
     if not name or name != filename:
         raise HTTPException(400,"无效的图片文件名")
-    image_urls=[*db.scalars(select(Body.image_url).where(Body.image_url!="")).all(),*db.scalars(select(Accessory.image_url).where(Accessory.image_url!="")).all(),*db.scalars(select(Bundle.image_url).where(Bundle.image_url!="")).all()]
+    image_urls=[*db.scalars(select(Accessory.image_url).where(Accessory.image_url!="")).all(),*db.scalars(select(Bundle.image_url).where(Bundle.image_url!="")).all()]
     if any(upload_filename(url)==name for url in image_urls):
-        raise HTTPException(409,"图片仍被主体、配件或套装使用，不能删除")
+        raise HTTPException(409,"图片仍被配件或套装使用，不能删除")
     deleted=remove_uploaded_file(f"/uploads/{name}")
     if deleted:
         mark_target_deleted(db,"image",name,name)
@@ -1079,7 +1070,7 @@ def delete_upload(filename:str,user:User=Depends(admin_user),db:Session=Depends(
 @app.post("/api/admin/pricing-test")
 def pricing_test(payload:QuoteIn,user:User=Depends(admin_user),db:Session=Depends(get_db)):
     result=calculate(payload,db,private=True)
-    audit(db,user,"test","pricing",str(payload.body_id),{"final_price":result["final_price"],"line_count":len(payload.lines),"discount_type":payload.discount_type})
+    audit(db,user,"test","pricing",str(payload.body_id),{"final_price":result["final_price"],"line_count":len(payload.lines)})
     db.commit()
     return result
 

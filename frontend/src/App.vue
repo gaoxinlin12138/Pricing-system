@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, type Session } from './api'
 import AdminView from './components/AdminView.vue'
 import EmployeeView from './components/EmployeeView.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
 import LoginView from './components/LoginView.vue'
 import ToastStack from './components/ToastStack.vue'
 import { toast } from './ui/toast'
@@ -69,5 +70,6 @@ async function logout() {
     <EmployeeView v-else />
   </div>
 
+  <ConfirmDialog />
   <ToastStack />
 </template>

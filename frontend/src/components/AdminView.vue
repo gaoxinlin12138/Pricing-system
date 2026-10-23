@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import {
   api,
   type Accessory,
@@ -13,7 +13,6 @@ import {
 } from '../api'
 import { toast } from '../ui/toast'
 import AccessoriesPanel from './admin/AccessoriesPanel.vue'
-import BodiesPanel from './admin/BodiesPanel.vue'
 import BundlesPanel from './admin/BundlesPanel.vue'
 import LogsPanel from './admin/LogsPanel.vue'
 import OverviewPanel from './admin/OverviewPanel.vue'
@@ -23,14 +22,15 @@ import UsersPanel from './admin/UsersPanel.vue'
 
 defineProps<{ username: string }>()
 
-const tabs = ['概览', '计价参数', '主体', '配件', '套装', '账号', '报价', '日志']
+const tabs = ['概览', '计价参数', '配件', '套装', '账号', '报价', '日志']
 
 const tab = ref('概览')
 const loading = ref(true)
 const refreshing = ref(false)
 
-const bodies = ref<Body[]>([])
 const accessories = ref<Accessory[]>([])
+/** 主体已并入配件表，套装编辑器仍然只需要主体列表。 */
+const bodies = computed<Body[]>(() => accessories.value.filter((item) => item.category === '主体'))
 const bundles = ref<AdminBundle[]>([])
 const quoteRows = ref<QuoteSummary[]>([])
 const users = ref<AdminUser[]>([])
@@ -39,18 +39,13 @@ const schema = ref<CategorySchema[]>([])
 const settings = ref<PricingSettings>({
   multiplier: '1.5',
   labor_fee: '0',
-  tax_rate_percent: '0',
-  freight: '0',
   quote_valid_days: 15,
-  max_discount_percent: '0',
-  minimum_price: '0',
 })
 
 async function load() {
   try {
-    const [settingsRow, bodyRows, accessoryRows, bundleRows, quoteList, userRows, logRows, schemaRows] = await Promise.all([
+    const [settingsRow, accessoryRows, bundleRows, quoteList, userRows, logRows, schemaRows] = await Promise.all([
       api<PricingSettings>('/api/admin/pricing-settings'),
-      api<Body[]>('/api/admin/bodies'),
       api<Accessory[]>('/api/admin/accessories'),
       api<AdminBundle[]>('/api/admin/bundles'),
       api<QuoteSummary[]>('/api/admin/quotes'),
@@ -59,7 +54,6 @@ async function load() {
       api<CategorySchema[]>('/api/catalog/accessory-schema'),
     ])
     settings.value = settingsRow
-    bodies.value = bodyRows
     accessories.value = accessoryRows
     bundles.value = bundleRows
     quoteRows.value = quoteList
@@ -114,7 +108,6 @@ onMounted(load)
           @navigate="tab = $event"
         />
         <SettingsPanel v-else-if="tab === '计价参数'" :settings="settings" @changed="refresh" />
-        <BodiesPanel v-else-if="tab === '主体'" :bodies="bodies" @changed="refresh" />
         <AccessoriesPanel v-else-if="tab === '配件'" :accessories="accessories" :schema="schema" @changed="refresh" />
         <BundlesPanel v-else-if="tab === '套装'" :bundles="bundles" :bodies="bodies" :accessories="accessories" :settings="settings" :schema="schema" @changed="refresh" />
         <UsersPanel v-else-if="tab === '账号'" :users="users" :current-user="username" @changed="refresh" />

@@ -23,11 +23,7 @@ async function save() {
       body: JSON.stringify({
         multiplier: Number(form.multiplier),
         labor_fee: Number(form.labor_fee),
-        tax_rate_percent: Number(form.tax_rate_percent),
-        freight: Number(form.freight),
         quote_valid_days: Number(form.quote_valid_days),
-        max_discount_percent: Number(form.max_discount_percent),
-        minimum_price: Number(form.minimum_price),
       }),
     })
     toast('计价参数已保存', 'ok')
@@ -58,16 +54,12 @@ async function save() {
         <div class="settings-grid">
           <label class="field"><span>统一倍率</span><input v-model="form.multiplier" class="input" type="number" min="1" step="0.01" /></label>
           <label class="field"><span>统一人工费（元）</span><input v-model="form.labor_fee" class="input" type="number" min="0" step="1" /></label>
-          <label class="field"><span>税率（%）</span><input v-model="form.tax_rate_percent" class="input" type="number" min="0" step="0.1" /></label>
-          <label class="field"><span>运费（元）</span><input v-model="form.freight" class="input" type="number" min="0" step="1" /></label>
           <label class="field"><span>报价有效期（天）</span><input v-model="form.quote_valid_days" class="input" type="number" min="1" step="1" /></label>
-          <label class="field"><span>最大折扣（%）</span><input v-model="form.max_discount_percent" class="input" type="number" min="0" step="1" /></label>
-          <label class="field"><span>最低售价（元）</span><input v-model="form.minimum_price" class="input" type="number" min="0" step="1" /></label>
         </div>
 
         <div class="formula" style="margin-top: 20px">
           <b>计价公式</b>
-          <span>（主体成本 + 配件成本 × 数量 + 人工费）× 倍率 → 折扣 → 加税 → 加运费 = 最终对外售价</span>
+          <span>单套售价 =（主体成本 + 配件总成本 + 人工费）× 倍率，其中配件总成本 = 各配件（单件成本 × 数量）之和；多套总价 = 单套售价 × 套数。</span>
         </div>
       </div>
     </div>
