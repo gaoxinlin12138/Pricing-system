@@ -27,6 +27,17 @@ def upgrade():
     bundles = sa.Table("bundles", meta, autoload_with=bind)
     quotes = sa.Table("quotes", meta, autoload_with=bind)
 
+    # 旧库的 accessories 自增序列可能落后于 MAX(id)（历史上用显式 id 导入过数据）。
+    # 不先校准的话，下面插入主体会从 1 开始，直接撞 accessories_pkey。
+    if bind.dialect.name == "postgresql":
+        bind.execute(
+            sa.text(
+                "SELECT setval("
+                "pg_get_serial_sequence('accessories', 'id'), "
+                "COALESCE((SELECT MAX(id) FROM accessories), 0) + 1, false)"
+            )
+        )
+
     # 旧主体按名称+型号映射到新配件；已存在同名主体时直接复用，保证迁移可重复执行。
     mapping: dict[int, int] = {}
     for row in bind.execute(sa.select(bodies)).mappings().all():
