@@ -345,6 +345,37 @@ def test_quote_price_uses_accessory_and_set_quantity():
     assert "freight" not in settings
 
 
+def test_quote_can_override_multiplier_and_labor():
+    admin = admin_client()
+    body_id, accessory_id = catalog_for_quote(admin)
+    bundle = admin.post(
+        "/api/admin/bundles",
+        json={
+            "name": "倍率人工覆盖测试",
+            "description": "",
+            "body_id": body_id,
+            "active": True,
+            "items": [{"accessory_id": accessory_id, "quantity": 1, "position": 1}],
+        },
+    ).json()
+    quote = admin.post(
+        "/api/quotes",
+        json={
+            "bundle_id": bundle["id"],
+            "lines": [{"bundle_item_id": bundle["items"][0]["id"], "accessory_id": accessory_id, "quantity": 2}],
+            "set_quantity": 2,
+            "multiplier": 2,
+            "labor_fee": 50,
+        },
+    ).json()
+    # 配件 10×2=20；单套 (100+20+50)×2=340；2 套总价 680
+    assert quote["unit_price"] == "340.00"
+    assert quote["final_price"] == "680.00"
+    detail = admin.get(f"/api/quotes/{quote['quote_no']}").json()
+    assert float(detail["pricing"]["multiplier"]) == 2
+    assert float(detail["pricing"]["labor_fee"]) == 50
+
+
 def test_numeric_attribute_gets_unit_appended():
     admin = admin_client()
     payload = {

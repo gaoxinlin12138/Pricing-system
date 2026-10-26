@@ -11,6 +11,10 @@ depends_on = None
 
 
 def upgrade():
+    bind = op.get_bind()
+    # Base.metadata.create_all() 可能在启动时先建出这张表；迁移保持幂等，避免重复建表。
+    if "user_sessions" in sa.inspect(bind).get_table_names():
+        return
     op.create_table(
         "user_sessions",
         sa.Column("id", sa.Integer(), primary_key=True),

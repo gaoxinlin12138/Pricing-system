@@ -1172,7 +1172,7 @@ def update_user(user_id:int,payload:UserIn,user:User=Depends(admin_user),db:Sess
         x.password_hash=hash_password(payload.password)
     if payload.password or role_changed or active_changed:
         revoke_user_sessions(db, x.id)
-    audit(db,user,"update","user",str(user_id),{"username":x.username,"role":x.role,"active":x.active});db.commit();return {"ok":True}
+    audit(db,user,"update","user",str(user_id),{"username":x.username,"role":x.role,"active":x.active,"password_changed":bool(payload.password)});db.commit();return {"ok":True}
 
 
 @app.delete("/api/admin/users/{user_id}")

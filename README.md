@@ -97,11 +97,11 @@ DATABASE_URL=postgresql+psycopg://postgres:你的密码@127.0.0.1:5432/pricing
 
 启动后访问 `http://127.0.0.1:5173/`（若端口被占用，以启动窗口打印的地址为准）。启动窗口保持打开，按 `Ctrl+C` 可以停止对应服务。
 
-备份脚本位于 `scripts/backup_postgres.ps1`。正式环境请将 `SESSION_SECRET` 替换为随机长密钥。
+Docker 部署的备份脚本位于 `scripts/backup_postgres.ps1`；非 Docker 的 systemd + 系统 PostgreSQL 部署请使用 [DEPLOY.md](DEPLOY.md) 14.9 的 `pg_dump` 命令。正式环境请将 `SESSION_SECRET` 替换为随机长密钥。
 
 ## 数据与文件存放
 
-- **业务数据**：全部在 PostgreSQL 的 `pricing` 库里（连接串见根目录 `.env`），表包括 `accessories`、`bundles`、`bundle_items`、`quotes`、`users`、`pricing_settings`、`audit_logs`；迁移前的旧表 `bodies` 仍保留作回滚备份，运行期不再读写。数据库文件由 PostgreSQL 自己管理（本机默认在 `E:\software\PostgreSQL\data`）。
+- **业务数据**：全部在 PostgreSQL 的 `pricing` 库里（连接串见根目录 `.env`），表包括 `accessories`、`bundles`、`bundle_items`、`quotes`、`users`、`user_sessions`、`pricing_settings`、`audit_logs`；迁移前的旧表 `bodies` 仍保留作回滚备份，运行期不再读写。数据库文件由 PostgreSQL 自己管理（本机默认在 `E:\software\PostgreSQL\data`）。
 - **图片**：只存本地文件，目录是 `backend/uploads/`（由 `UPLOAD_DIR` 决定），文件名随机（如 `CqlXU7HIq9-2mt29NisGCw.webp`）。数据库里只存 URL（`/uploads/xxx.webp` 或上传接口返回的完整地址），前端统一按同源 `/uploads/` 访问，开发时由 Vite 代理到后端。
 
 删除规则：
@@ -122,7 +122,7 @@ DATABASE_URL=postgresql+psycopg://postgres:你的密码@127.0.0.1:5432/pricing
 3. **套装**：自由选择「1 个主体 + 若干配件」组成预设套装，填写套装编号、上传一张**套装成品效果图**后保存，员工端即可搜索到。编辑器按配件类型各预置一行 BOM，「主体」也是其中一行且为必选；其余类型直接选对应配件即可，留空的行保存时自动跳过。成品图是员工端卡片和详情页的封面，没传图时显示占位图并在后台标记「缺图」，不会拿主体图顶替。
 4. **报价**：维护报价有效期、查看报价记录；倍率和人工费由员工在每次报价时按套装实际情况输入。
 
-主体与配件共用一张表（类别为 `主体`），套装通过 `bundles.body_id` 引用主体记录；主体数量固定为 1，但员工可以从启用中的同类主体里替换。主体仍不能作为普通 BOM 配件重复加入。迁移 `0008` 会把原 `bodies` 记录复制到 `accessories`，并同步改写套装的 `body_id` 和历史报价快照；`0009` 补齐带单位属性，`0010` / `0011` 依次移除税率与折扣上限、最低售价，`0012` 移除运费。旧 `bodies` 表保留作回滚备份，运行期不再读写。
+主体与配件共用一张表（类别为 `主体`），套装通过 `bundles.body_id` 引用主体记录；主体数量固定为 1，但员工可以从启用中的同类主体里替换。主体仍不能作为普通 BOM 配件重复加入。迁移 `0008` 会把原 `bodies` 记录复制到 `accessories`，并同步改写套装的 `body_id` 和历史报价快照；`0009` 补齐带单位属性，`0010` / `0011` 依次移除税率与折扣上限、最低售价，`0012` 移除运费，`0013` 移除遗留的 `accessories.required` 列，`0014` 增加可撤销的服务端登录会话表 `user_sessions`。旧 `bodies` 表保留作回滚备份，运行期不再读写。
 
 套装只保存对主体/配件的**引用**（`bundle_items` 里只有 `accessory_id`、数量和排序），不复制名称和成本。所以之后修改配件的名称、型号、类别、属性、图片或成本，所有引用它的套装会立即跟着变（售价按新成本重算）；已经保存的报价仍是保存当时的快照，不受影响。被套装引用的配件不能删除，也不能停用。
 

@@ -419,6 +419,8 @@ set -a; . /etc/pricing/pricing.env; set +a
 systemctl restart pricing
 ```
 
+> 从 `0012` 升级到当前版本会依次执行 `0013` / `0014`。已有 `/etc/pricing/pricing.env` 还要确认 `APP_ENV=production` 且 `COOKIE_SECURE=true`（站点已启用 HTTPS）；两者不一致会导致生产校验失败或继续以开发模式运行。`0014` 已做幂等保护，可重复执行迁移。
+
 ### 14.9 备份（系统 PostgreSQL 版）
 
 ```bash
