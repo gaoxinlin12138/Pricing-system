@@ -47,6 +47,62 @@ async function logout() {
 </script>
 
 <template>
+  <div class="app-scenery app-scenery-top" aria-hidden="true">
+    <svg viewBox="0 0 1600 360" preserveAspectRatio="xMidYMin slice" role="presentation">
+      <defs>
+        <radialGradient id="scenery-top-glow" cx="78%" cy="0%" r="70%">
+          <stop offset="0" stop-color="#41bbc8" stop-opacity=".15" />
+          <stop offset=".5" stop-color="#8fdde3" stop-opacity=".06" />
+          <stop offset="1" stop-color="#fcf9e8" stop-opacity="0" />
+        </radialGradient>
+        <linearGradient id="scenery-top-plate" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ffffff" stop-opacity=".72" />
+          <stop offset=".6" stop-color="#d5eff2" stop-opacity=".32" />
+          <stop offset="1" stop-color="#8fdde3" stop-opacity=".10" />
+        </linearGradient>
+      </defs>
+
+      <rect width="1600" height="360" fill="url(#scenery-top-glow)" />
+
+      <g fill="none" stroke="#41bbc8" stroke-opacity=".12">
+        <ellipse cx="1270" cy="-60" rx="430" ry="300" />
+        <ellipse cx="1270" cy="-60" rx="350" ry="245" />
+        <ellipse cx="1270" cy="-60" rx="270" ry="190" />
+      </g>
+
+      <g fill="none" stroke="#0b5e67" stroke-opacity=".07" stroke-width="1.2">
+        <path d="M-40 230 C 240 160 460 245 720 200 C 980 155 1200 215 1640 175" />
+        <path d="M-40 258 C 220 190 450 275 730 228 C 990 184 1220 242 1640 205" />
+        <path d="M-40 286 C 260 220 480 305 760 260 C 1020 218 1260 272 1640 236" />
+      </g>
+
+      <g transform="translate(1160 55)">
+        <path d="M0 100 L190 5 L365 70 L175 170 Z" fill="url(#scenery-top-plate)" opacity=".5" />
+        <path d="M0 100 L175 170 L175 190 L0 120 Z" fill="#0b5e67" opacity=".055" />
+        <path d="M175 170 L365 70 L365 90 L175 190 Z" fill="#0b5e67" opacity=".04" />
+        <g fill="none" stroke="#0b5e67" stroke-opacity=".08">
+          <path d="M0 100 L190 5 L365 70 L175 170 Z" />
+          <path d="M45 78 L235 148 M90 56 L280 126 M135 34 L325 104" />
+        </g>
+      </g>
+
+      <g transform="translate(1325 40)">
+        <path d="M0 58 L112 4 L218 40 L106 96 Z" fill="url(#scenery-top-plate)" opacity=".34" />
+        <path d="M0 58 L106 96 L106 110 L0 72 Z" fill="#0b5e67" opacity=".04" />
+        <path d="M106 96 L218 40 L218 54 L106 110 Z" fill="#0b5e67" opacity=".03" />
+        <path d="M0 58 L112 4 L218 40 L106 96 Z" fill="none" stroke="#0b5e67" stroke-opacity=".08" />
+      </g>
+
+      <g fill="none" stroke="#0b5e67" stroke-opacity=".16" stroke-width="1.2">
+        <path d="M300 128 v12 M294 134 h12" />
+        <path d="M586 84 v8 M582 88 h8" />
+        <path d="M1500 174 v9 M1495.5 178.5 h9" />
+      </g>
+      <circle cx="338" cy="206" r="2.2" fill="#41bbc8" opacity=".3" />
+      <circle cx="1042" cy="80" r="1.8" fill="#0b5e67" opacity=".16" />
+    </svg>
+  </div>
+
   <div class="app-scenery" aria-hidden="true">
     <svg viewBox="0 0 1600 560" preserveAspectRatio="xMidYMax slice" role="presentation">
       <defs>
