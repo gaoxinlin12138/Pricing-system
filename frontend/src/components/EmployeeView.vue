@@ -765,12 +765,12 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 替换主体或配件 -->
-    <AppModal v-if="replacementTarget" :title="`替换「${replacementTarget.name}」`" :subtitle="`只能从同类别（${replacementTarget.category}）的配件中选择`" @close="closeReplacement">
+    <AppModal v-if="replacementTarget" medium :title="`替换「${replacementTarget.name}」`" :subtitle="`只能从同类别（${replacementTarget.category}）的配件中选择`" @close="closeReplacement">
       <div v-if="candidateList.length" class="stack">
         <button
           v-for="option in candidateList"
           :key="option.id"
-          class="quick-item"
+          class="quick-item replacement-option"
           style="cursor: pointer; text-align: left"
           :disabled="option.id === replacementTarget.currentId"
           @click="applyReplacement(option)"

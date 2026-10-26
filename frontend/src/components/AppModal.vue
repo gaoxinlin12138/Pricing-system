@@ -5,6 +5,7 @@ defineProps<{
   title: string
   subtitle?: string
   wide?: boolean
+  medium?: boolean
 }>()
 
 const emit = defineEmits<{ (event: 'close'): void }>()
@@ -26,7 +27,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="modal-mask" @click.self="emit('close')">
-    <div class="modal" :class="{ wide }" role="dialog" aria-modal="true" :aria-label="title">
+    <div class="modal" :class="{ wide, medium }" role="dialog" aria-modal="true" :aria-label="title">
       <div class="modal-head">
         <div>
           <h3 class="modal-title">{{ title }}</h3>
