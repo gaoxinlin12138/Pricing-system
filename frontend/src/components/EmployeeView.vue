@@ -782,7 +782,13 @@ onBeforeUnmount(() => {
             </span>
             <span class="product-main">
               <strong>{{ option.name }}</strong>
-              <small>{{ option.model }} · 数量 {{ qty(option.min_qty) }}–{{ qty(option.max_qty) }}</small>
+              <small>
+                <span class="chip">{{ option.category }}</span>
+                {{ option.model }} · 可调数量 {{ qty(option.min_qty) }}–{{ qty(option.max_qty) }}
+              </small>
+              <span v-if="Object.keys(option.attributes || {}).length" class="attrs">
+                <span v-for="(value, key) in option.attributes" :key="key" class="chip">{{ key }}：{{ value }}</span>
+              </span>
             </span>
           </span>
            <span v-if="option.id === replacementTarget.currentId" class="badge">当前选择</span>
