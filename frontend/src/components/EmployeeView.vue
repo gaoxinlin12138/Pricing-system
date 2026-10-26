@@ -28,9 +28,17 @@ const step = ref(1)
 const confirmed = ref(false)
 const setCount = ref(1)
 const MAX_SET_COUNT = 99
+const BODY_CATEGORY = '主体'
+const DEFAULT_MULTIPLIER = 1.5
+const DEFAULT_LABOR_FEE = 80
+// 每次报价独立维护，不会修改后台默认计价设置或其它套装。
+const quoteMultiplier = ref(DEFAULT_MULTIPLIER)
+const quoteLaborFee = ref(DEFAULT_LABOR_FEE)
+const pricingDefaults = reactive({ multiplier: DEFAULT_MULTIPLIER, labor_fee: DEFAULT_LABOR_FEE })
 
 const selected = ref<BundleDetail | null>(null)
 const draft = reactive<Record<number, { accessory_id: number; quantity: number }>>({})
+const bodyDraft = ref<number | null>(null)
 const preview = ref<BundleQuotePreview | null>(null)
 const previewing = ref(false)
 const previewError = ref('')
@@ -38,6 +46,7 @@ const saving = ref(false)
 const savedQuote = ref<{ quote_no: string; final_price: string; valid_until: string } | null>(null)
 
 const replacingItem = ref<BundleItem | null>(null)
+const replacingBody = ref(false)
 
 const quoteDetail = ref<QuoteDetail | null>(null)
 const quoteDetailOpen = ref(false)
@@ -49,7 +58,7 @@ const filteredBundles = computed(() => {
   const needle = query.value.trim().toLowerCase()
   if (!needle) return bundles.value
   return bundles.value.filter((bundle) =>
-    [bundle.name, bundle.description, bundle.body?.name, bundle.body?.model]
+    [bundle.name, bundle.code, bundle.description, bundle.body?.name, bundle.body?.model]
       .filter(Boolean)
       .join(' ')
       .toLowerCase()
@@ -73,19 +82,42 @@ const lines = computed(() => {
   })
 })
 
-const replacedCount = computed(() => lines.value.filter((line) => line.changed).length)
+const bodyAccessory = computed(() => {
+  const original = selected.value?.body
+  if (!original) return null
+  const selectedId = bodyDraft.value ?? original.id
+  return selected.value?.replacement_candidates?.[BODY_CATEGORY]?.find((option) => option.id === selectedId) || original
+})
+
+const bodyChanged = computed(() => !!selected.value?.body && bodyAccessory.value?.id !== selected.value.body.id)
+
+const replacedCount = computed(() => lines.value.filter((line) => line.changed).length + (bodyChanged.value ? 1 : 0))
 
 const candidateList = computed(() => {
+  if (replacingBody.value) return selected.value?.replacement_candidates?.[BODY_CATEGORY] || []
   const item = replacingItem.value
   if (!item || !selected.value) return []
   return selected.value.replacement_candidates?.[item.accessory.category] || []
+})
+
+const replacementTarget = computed(() => {
+  if (replacingBody.value && bodyAccessory.value) {
+    return { name: bodyAccessory.value.name, category: BODY_CATEGORY, currentId: bodyAccessory.value.id }
+  }
+  if (replacingItem.value) {
+    return { name: replacingItem.value.accessory.name, category: replacingItem.value.accessory.category, currentId: draft[replacingItem.value.id]?.accessory_id }
+  }
+  return null
 })
 
 function buildPayload() {
   if (!selected.value) return null
   return {
     bundle_id: selected.value.id,
+    body_id: bodyDraft.value ?? selected.value.body?.id,
     set_quantity: setCount.value,
+    multiplier: Number(quoteMultiplier.value),
+    labor_fee: Number(quoteLaborFee.value),
     lines: selected.value.items.map((item) => ({
       bundle_item_id: item.id,
       accessory_id: draft[item.id]?.accessory_id ?? item.accessory.id,
@@ -94,12 +126,35 @@ function buildPayload() {
   }
 }
 
+function normalizePricingInputs() {
+  const multiplier = Number(quoteMultiplier.value)
+  const laborFee = Number(quoteLaborFee.value)
+  quoteMultiplier.value = Number.isFinite(multiplier) ? Math.max(1, multiplier) : DEFAULT_MULTIPLIER
+  quoteLaborFee.value = Number.isFinite(laborFee) ? Math.max(0, laborFee) : DEFAULT_LABOR_FEE
+}
+
+function pricingChanged() {
+  normalizePricingInputs()
+  preview.value = null
+  previewError.value = ''
+  savedQuote.value = null
+  if (step.value === 3 && confirmed.value) void runPreview()
+}
+
 async function load() {
   loading.value = true
   try {
-    const [bundleRows, quoteRows] = await Promise.all([api<BundleSummary[]>('/api/catalog/bundles'), api<QuoteSummary[]>('/api/quotes')])
+    const [bundleRows, quoteRows, defaults] = await Promise.all([
+      api<BundleSummary[]>('/api/catalog/bundles'),
+      api<QuoteSummary[]>('/api/quotes'),
+      api<{ multiplier: string; labor_fee: string }>('/api/pricing-defaults'),
+    ])
     bundles.value = bundleRows
     quotes.value = quoteRows
+    const defaultMultiplier = Number(defaults.multiplier)
+    const defaultLaborFee = Number(defaults.labor_fee)
+    pricingDefaults.multiplier = Number.isFinite(defaultMultiplier) && defaultMultiplier >= 1 ? defaultMultiplier : DEFAULT_MULTIPLIER
+    pricingDefaults.labor_fee = Number.isFinite(defaultLaborFee) && defaultLaborFee >= 0 ? defaultLaborFee : DEFAULT_LABOR_FEE
   } catch (exception) {
     toast((exception as Error).message, 'err')
   } finally {
@@ -115,8 +170,11 @@ async function openBundle(bundle: BundleSummary) {
     detail.items.forEach((item) => {
       draft[item.id] = { accessory_id: item.accessory.id, quantity: Number(item.quantity) }
     })
+    bodyDraft.value = detail.body?.id || null
     confirmed.value = false
     setCount.value = 1
+    quoteMultiplier.value = pricingDefaults.multiplier
+    quoteLaborFee.value = pricingDefaults.labor_fee
     savedQuote.value = null
     preview.value = null
     previewError.value = ''
@@ -132,6 +190,8 @@ function backToSearch() {
   setCount.value = 1
   step.value = 1
   selected.value = null
+  bodyDraft.value = null
+  closeReplacement()
   preview.value = null
   previewError.value = ''
 }
@@ -164,6 +224,13 @@ function setQuantity(itemId: number, value: number, accessory: Accessory) {
 }
 
 function applyReplacement(accessory: Accessory) {
+  if (replacingBody.value) {
+    bodyDraft.value = accessory.id
+    replacingBody.value = false
+    confirmed.value = false
+    savedQuote.value = null
+    return
+  }
   const item = replacingItem.value
   if (!item || !draft[item.id]) return
   draft[item.id].accessory_id = accessory.id
@@ -171,6 +238,17 @@ function applyReplacement(accessory: Accessory) {
   replacingItem.value = null
   confirmed.value = false
   savedQuote.value = null
+}
+
+function restoreBody() {
+  bodyDraft.value = selected.value?.body?.id || null
+  confirmed.value = false
+  savedQuote.value = null
+}
+
+function closeReplacement() {
+  replacingItem.value = null
+  replacingBody.value = false
 }
 
 function restoreOriginal(item: BundleItem) {
@@ -223,7 +301,11 @@ function restart() {
   step.value = 1
   confirmed.value = false
   setCount.value = 1
+  quoteMultiplier.value = pricingDefaults.multiplier
+  quoteLaborFee.value = pricingDefaults.labor_fee
   selected.value = null
+  bodyDraft.value = null
+  closeReplacement()
   savedQuote.value = null
   preview.value = null
   query.value = ''
@@ -245,6 +327,7 @@ function goStep(target: 1 | 2 | 3) {
 function confirmQuote() {
   if (!selected.value) return
   normalizeSetCount()
+  normalizePricingInputs()
   confirmed.value = true
   step.value = 3
 }
@@ -432,7 +515,7 @@ onBeforeUnmount(() => {
                 </div>
                 <p class="hero-caption">套装成品</p>
                 <h3>{{ selected.name }}</h3>
-                <p class="page-sub">1 个主体 + {{ selected.items.length }} 个配件共同构成这套成品；主体固定，配件可按类别替换。</p>
+                 <p class="page-sub">1 个主体 + {{ selected.items.length }} 个配件共同构成这套成品；主体和配件都可按类别替换，主体数量固定为 1。</p>
               </div>
             </div>
 
@@ -443,19 +526,22 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   class="thumb thumb-button"
-                  :disabled="!selected.body?.image_url"
-                  :title="selected.body?.image_url ? '点击查看大图' : '暂无图片'"
-                  @click="openImage(selected.body?.image_url, selected.body?.name || '主体', selected.body?.model)"
+                  :disabled="!bodyAccessory?.image_url"
+                  :title="bodyAccessory?.image_url ? '点击查看大图' : '暂无图片'"
+                  @click="openImage(bodyAccessory?.image_url, bodyAccessory?.name || '主体', bodyAccessory?.model)"
                 >
-                  <img v-if="selected.body?.image_url" :src="imageSrc(selected.body.image_url)" :alt="selected.body?.name" />
+                  <img v-if="bodyAccessory?.image_url" :src="imageSrc(bodyAccessory.image_url)" :alt="bodyAccessory?.name" />
                   <span v-else>◈</span>
                 </button>
                 <div class="item-info">
-                  <b>{{ selected.body?.name }} <span class="badge">主体</span></b>
-                  <small>{{ selected.body?.model }}</small>
+                  <b>{{ bodyAccessory?.name }} <span class="badge">主体</span><span v-if="bodyChanged" class="badge">已替换</span></b>
+                  <small>{{ bodyAccessory?.model }}</small>
                 </div>
                 <span class="num bom-qty">1</span>
-                <span class="bom-fixed">固定</span>
+                <div class="row bom-actions">
+                  <button class="btn btn-sm" @click="replacingBody = true">替换</button>
+                  <button v-if="bodyChanged" class="btn btn-sm btn-ghost" @click="restoreBody">恢复</button>
+                </div>
               </div>
 
               <div v-for="line in lines" :key="line.item.id" class="bom-row">
@@ -514,19 +600,20 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   class="thumb thumb-button"
-                  :disabled="!selected.body?.image_url"
-                  :title="selected.body?.image_url ? '点击查看大图' : '暂无图片'"
-                  @click="openImage(selected.body?.image_url, selected.body?.name || '主体', selected.body?.model)"
+                  :disabled="!bodyAccessory?.image_url"
+                  :title="bodyAccessory?.image_url ? '点击查看大图' : '暂无图片'"
+                  @click="openImage(bodyAccessory?.image_url, bodyAccessory?.name || '主体', bodyAccessory?.model)"
                 >
-                  <img v-if="selected.body?.image_url" :src="imageSrc(selected.body.image_url)" :alt="selected.body?.name" />
+                  <img v-if="bodyAccessory?.image_url" :src="imageSrc(bodyAccessory.image_url)" :alt="bodyAccessory?.name" />
                   <span v-else>◈</span>
                 </button>
                 <div class="item-info">
-                  <b>{{ selected.body?.name }} <span class="badge">主体</span></b>
-                  <small>{{ selected.body?.model }}</small>
+                  <b>{{ bodyAccessory?.name }} <span class="badge">主体</span></b>
+                  <small>{{ bodyAccessory?.model }}</small>
                 </div>
                 <span class="num bom-qty">1</span>
-                <span class="bom-fixed">固定</span>
+                <span v-if="bodyChanged" class="badge">已替换</span>
+                <span v-else class="muted bom-fixed">原配</span>
               </div>
 
               <div v-for="line in lines" :key="line.item.id" class="bom-row">
@@ -571,6 +658,27 @@ onBeforeUnmount(() => {
             <span v-if="step === 3 && previewing" class="badge">计算中…</span>
           </div>
           <div class="card-body">
+            <div v-if="step === 3" class="quote-params">
+              <div class="quote-params-head">
+                <div>
+                  <b>本套计价参数</b>
+                  <small>根据当前套装和配件实际情况调整，只作用于本次报价</small>
+                </div>
+                <span class="badge">可调整</span>
+              </div>
+              <div class="form-grid">
+                <label class="field">
+                  <span>倍率</span>
+                  <input v-model.number="quoteMultiplier" class="input" type="number" min="1" step="0.01" @change="pricingChanged" />
+                </label>
+                <label class="field">
+                  <span>人工费（元）</span>
+                  <input v-model.number="quoteLaborFee" class="input" type="number" min="0" step="1" @change="pricingChanged" />
+                </label>
+              </div>
+              <p class="form-hint">单套售价 =（主体成本 + 配件成本 + 人工费）× 倍率</p>
+            </div>
+
             <div v-if="step === 3" class="price-box">
               <span>最终总价</span>
               <strong>{{ totalPriceText }}</strong>
@@ -601,9 +709,9 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <div class="summary-line">
-              <span>配件数量</span>
-              <b>{{ lines.length }} 项</b>
+              <div class="summary-line">
+                <span>物料数量</span>
+                <b>{{ lines.length + 1 }} 项</b>
             </div>
             <div class="summary-line">
               <span>已替换</span>
@@ -656,15 +764,15 @@ onBeforeUnmount(() => {
       </aside>
     </div>
 
-    <!-- 替换配件 -->
-    <AppModal v-if="replacingItem" :title="`替换「${replacingItem.accessory.name}」`" :subtitle="`只能从同类别（${replacingItem.accessory.category}）的配件中选择`" @close="replacingItem = null">
+    <!-- 替换主体或配件 -->
+    <AppModal v-if="replacementTarget" :title="`替换「${replacementTarget.name}」`" :subtitle="`只能从同类别（${replacementTarget.category}）的配件中选择`" @close="closeReplacement">
       <div v-if="candidateList.length" class="stack">
         <button
           v-for="option in candidateList"
           :key="option.id"
           class="quick-item"
           style="cursor: pointer; text-align: left"
-          :disabled="option.id === draft[replacingItem.id]?.accessory_id"
+          :disabled="option.id === replacementTarget.currentId"
           @click="applyReplacement(option)"
         >
           <span class="product">
@@ -677,7 +785,7 @@ onBeforeUnmount(() => {
               <small>{{ option.model }} · 数量 {{ qty(option.min_qty) }}–{{ qty(option.max_qty) }}</small>
             </span>
           </span>
-          <span v-if="option.id === draft[replacingItem.id]?.accessory_id" class="badge">当前选择</span>
+           <span v-if="option.id === replacementTarget.currentId" class="badge">当前选择</span>
           <span v-else class="btn btn-sm">选择</span>
         </button>
       </div>
@@ -700,7 +808,7 @@ onBeforeUnmount(() => {
         <div class="item-list">
           <div class="item-row is-body" style="grid-template-columns: minmax(0, 1fr) auto">
             <div class="item-info">
-              <b>{{ quoteDetail.body?.name }} <span class="badge">主体</span></b>
+              <b>{{ quoteDetail.body?.name }} <span class="badge">主体</span><span v-if="lineReplaced(quoteDetail.body?.name || '')" class="badge">已替换</span></b>
               <small>{{ quoteDetail.body?.model }}</small>
             </div>
             <span class="num bom-qty">1</span>
@@ -719,6 +827,14 @@ onBeforeUnmount(() => {
           <span>{{ quoteReplacementNames().join('，') }}</span>
         </div>
 
+        <div class="summary-line">
+          <span>本次倍率</span>
+          <b>{{ quoteDetail.pricing?.multiplier || '—' }}</b>
+        </div>
+        <div class="summary-line">
+          <span>本次人工费</span>
+          <b>¥ {{ money(quoteDetail.pricing?.labor_fee) }}</b>
+        </div>
         <div class="summary-line">
           <span>单套售价</span>
           <b>¥ {{ money(quoteDetail.unit_price || quoteDetail.final_price) }}</b>

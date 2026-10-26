@@ -1,23 +1,80 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { api, formatDate, money, statusLabel, type QuoteDetail, type QuoteSummary } from '../../api'
 import { confirmDialog } from '../../ui/confirm'
 import { toast } from '../../ui/toast'
 import AppModal from '../AppModal.vue'
 
-const props = defineProps<{ quotes: QuoteSummary[] }>()
+const props = defineProps<{ quotes: QuoteSummary[]; quoteValidDays: number }>()
 const emit = defineEmits<{ (event: 'changed'): void }>()
 
 const query = ref('')
 const detail = ref<QuoteDetail | null>(null)
 const detailOpen = ref(false)
 const loadingDetail = ref(false)
+const quoteValidDays = ref(props.quoteValidDays)
+const savingValidity = ref(false)
+const selectedQuoteNos = ref<Set<string>>(new Set())
+
+watch(
+  () => props.quoteValidDays,
+  (value) => {
+    quoteValidDays.value = value
+  },
+)
+
+watch(
+  () => props.quotes.map((quote) => quote.quote_no).join('|'),
+  () => {
+    const available = new Set(props.quotes.map((quote) => quote.quote_no))
+    selectedQuoteNos.value = new Set([...selectedQuoteNos.value].filter((quoteNo) => available.has(quoteNo)))
+  },
+)
 
 const filtered = computed(() => {
   const needle = query.value.trim().toLowerCase()
   if (!needle) return props.quotes
   return props.quotes.filter((quote) => `${quote.quote_no} ${quote.bundle_name} ${quote.username || ''}`.toLowerCase().includes(needle))
 })
+
+const selectedCount = computed(() => selectedQuoteNos.value.size)
+const allVisibleSelected = computed(() => filtered.value.length > 0 && filtered.value.every((quote) => selectedQuoteNos.value.has(quote.quote_no)))
+
+function toggleSelected(quoteNo: string) {
+  const next = new Set(selectedQuoteNos.value)
+  if (next.has(quoteNo)) next.delete(quoteNo)
+  else next.add(quoteNo)
+  selectedQuoteNos.value = next
+}
+
+function toggleAllVisible() {
+  const next = new Set(selectedQuoteNos.value)
+  if (allVisibleSelected.value) filtered.value.forEach((quote) => next.delete(quote.quote_no))
+  else filtered.value.forEach((quote) => next.add(quote.quote_no))
+  selectedQuoteNos.value = next
+}
+
+async function saveQuoteValidity() {
+  const days = Math.round(Number(quoteValidDays.value))
+  if (!Number.isFinite(days) || days < 1 || days > 365) {
+    toast('报价有效期需为 1–365 天', 'err')
+    return
+  }
+  savingValidity.value = true
+  try {
+    await api('/api/admin/quote-settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ quote_valid_days: days }),
+    })
+    quoteValidDays.value = days
+    toast('报价有效期已保存', 'ok')
+    emit('changed')
+  } catch (exception) {
+    toast((exception as Error).message, 'err')
+  } finally {
+    savingValidity.value = false
+  }
+}
 
 async function open(quoteNo: string) {
   detailOpen.value = true
@@ -67,6 +124,29 @@ async function remove(quoteNo: string) {
   }
 }
 
+async function removeSelected() {
+  const quoteNos = [...selectedQuoteNos.value]
+  if (!quoteNos.length) return
+  const confirmed = await confirmDialog({
+    title: '批量删除报价单',
+    message: `确定删除选中的 ${quoteNos.length} 张报价单吗？删除后无法恢复。`,
+    confirmText: '批量删除',
+    danger: true,
+  })
+  if (!confirmed) return
+  try {
+    const result = await api<{ deleted: number }>('/api/admin/quotes/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ quote_nos: quoteNos }),
+    })
+    selectedQuoteNos.value = new Set()
+    toast(`已删除 ${result.deleted} 张报价单`, 'ok')
+    emit('changed')
+  } catch (exception) {
+    toast((exception as Error).message, 'err')
+  }
+}
+
 function statusClass(status: string) {
   if (status === 'void') return 'off'
   if (status === 'expired') return 'warn'
@@ -82,7 +162,13 @@ function statusClass(status: string) {
         <h1 class="page-title">报价记录</h1>
         <p class="page-sub">每张报价单都是保存时的快照，之后的调价或改套装都不会影响它。</p>
       </div>
-      <span class="badge">{{ props.quotes.length }} 张报价单</span>
+      <div class="quote-page-tools">
+        <label class="quote-validity"><span>报价有效期</span><input v-model.number="quoteValidDays" class="input" type="number" min="1" max="365" step="1" /><span>天</span></label>
+        <button class="btn btn-primary btn-sm" :disabled="savingValidity" @click="saveQuoteValidity">
+          <span v-if="savingValidity" class="spinner"></span>{{ savingValidity ? '保存中…' : '保存有效期' }}
+        </button>
+        <span class="badge">{{ props.quotes.length }} 张报价单</span>
+      </div>
     </div>
 
     <div class="card">
@@ -91,15 +177,20 @@ function statusClass(status: string) {
           <span class="search-icon">⌕</span>
           <input v-model="query" class="input" placeholder="搜索报价单号、套装或员工" />
         </div>
+        <button class="btn btn-danger btn-sm" :disabled="!selectedCount" @click="removeSelected">批量删除<span v-if="selectedCount">（{{ selectedCount }}）</span></button>
       </div>
       <div class="card-body tight">
         <div v-if="filtered.length" class="table-wrap">
           <table class="table">
             <thead>
-              <tr><th>报价单</th><th>套装</th><th>员工</th><th>状态</th><th class="num">套数</th><th class="num">总价</th><th>创建时间</th><th class="actions">操作</th></tr>
+              <tr>
+                <th class="select-cell"><input type="checkbox" :checked="allVisibleSelected" :indeterminate="selectedCount > 0 && !allVisibleSelected" aria-label="全选当前报价单" @change="toggleAllVisible" /></th>
+                <th>报价单</th><th>套装</th><th>员工</th><th>状态</th><th class="num">套数</th><th class="num">总价</th><th>创建时间</th><th class="actions">操作</th>
+              </tr>
             </thead>
             <tbody>
-              <tr v-for="quote in filtered" :key="quote.quote_no">
+              <tr v-for="quote in filtered" :key="quote.quote_no" :class="{ 'quote-row-void': quote.status === 'void' }">
+                <td class="select-cell"><input type="checkbox" :checked="selectedQuoteNos.has(quote.quote_no)" :aria-label="`选择报价单 ${quote.quote_no}`" @change="toggleSelected(quote.quote_no)" /></td>
                 <td class="mono">{{ quote.quote_no }}</td>
                 <td>{{ quote.bundle_name || '—' }}</td>
                 <td>{{ quote.username || '—' }}</td>

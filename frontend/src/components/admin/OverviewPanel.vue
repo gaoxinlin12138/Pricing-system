@@ -24,7 +24,7 @@ const steps = [
       <div>
         <p class="eyebrow">OVERVIEW</p>
         <h1 class="page-title">维护工作台</h1>
-        <p class="page-sub">配件（含主体）、预设套装与计价参数在这里维护；报价趋势一眼掌握。</p>
+        <p class="page-sub">配件（含主体）与预设套装在这里维护；报价趋势和有效期一眼掌握。</p>
       </div>
       <button class="btn" @click="emit('navigate', '套装')">去创建套装</button>
     </div>

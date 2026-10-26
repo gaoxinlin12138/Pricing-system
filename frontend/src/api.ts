@@ -85,7 +85,7 @@ export interface BundleQuotePreview {
     position: number
   }>
   replacements?: Array<{
-    bundle_item_id: number
+    bundle_item_id?: number | null
     original_accessory_id: number
     original_name: string
     replacement_accessory_id: number
@@ -96,6 +96,7 @@ export interface BundleQuotePreview {
   unit_price: string
   final_price: string
   quote_valid_days: number
+  pricing?: { multiplier: string; labor_fee: string }
   quote_no?: string
   created_at?: string
   valid_until?: string
@@ -127,6 +128,10 @@ export interface QuoteDetail extends Omit<BundleQuotePreview, 'private'> {
 export interface PricingSettings {
   multiplier: string
   labor_fee: string
+  quote_valid_days: number
+}
+
+export interface QuoteSettings {
   quote_valid_days: number
 }
 

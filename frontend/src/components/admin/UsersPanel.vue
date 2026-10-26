@@ -16,21 +16,25 @@ const roleOptions = [
 
 const editing = ref(false)
 const busy = ref(false)
+const editingCurrentUser = ref(false)
 const form = reactive({ id: 0, username: '', password: '', role: 'employee' as 'admin' | 'employee', active: true })
 
 function openCreate() {
   Object.assign(form, { id: 0, username: '', password: '', role: 'employee', active: true })
+  editingCurrentUser.value = false
   editing.value = true
 }
 
 function openEdit(user: AdminUser) {
   Object.assign(form, { id: user.id, username: user.username, password: '', role: user.role, active: user.active })
+  editingCurrentUser.value = user.username === props.currentUser
   editing.value = true
 }
 
 async function save() {
   if (busy.value) return
   if (form.username.trim().length < 3) return toast('账号至少 3 个字符', 'err')
+  if (editingCurrentUser.value && (form.role !== 'admin' || !form.active)) return toast('当前登录账号必须保持管理员且启用', 'err')
   if (!form.id && form.password.length < 8) return toast('新账号密码至少 8 位', 'err')
   if (form.id && form.password && form.password.length < 8) return toast('密码至少 8 位', 'err')
   busy.value = true
@@ -78,7 +82,7 @@ async function remove(user: AdminUser) {
       <div>
         <p class="eyebrow">ACCOUNTS</p>
         <h1 class="page-title">账号管理</h1>
-        <p class="page-sub">管理员维护目录和参数，员工只能搜索套装、替换配件并保存报价。</p>
+        <p class="page-sub">管理员维护目录和参数，员工只能搜索套装、替换主体或配件并保存报价。</p>
       </div>
       <button class="btn btn-primary" @click="openCreate">＋ 新增账号</button>
     </div>
@@ -122,10 +126,10 @@ async function remove(user: AdminUser) {
         <label class="field"><span>账号</span><input v-model="form.username" class="input" autocomplete="off" /></label>
         <label class="field"><span>密码 <small v-if="form.id">留空不修改</small></span><input v-model="form.password" class="input" type="password" autocomplete="new-password" /></label>
         <label class="field">
-          <span>角色</span>
-          <AppSelect v-model="form.role" :options="roleOptions" placeholder="请选择角色" aria-label="角色" />
+          <span>角色 <small v-if="editingCurrentUser">当前登录账号不可降级</small></span>
+          <AppSelect v-model="form.role" :options="roleOptions" :disabled="editingCurrentUser" placeholder="请选择角色" aria-label="角色" />
         </label>
-        <label class="field switch" style="align-self: end; padding-bottom: 8px"><input v-model="form.active" type="checkbox" /> 启用</label>
+        <label class="field switch" style="align-self: end; padding-bottom: 8px"><input v-model="form.active" type="checkbox" :disabled="editingCurrentUser" /> 启用</label>
       </div>
       <template #footer>
         <button class="btn" type="button" @click="editing = false">取消</button>

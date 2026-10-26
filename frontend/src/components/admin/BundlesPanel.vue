@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
-import { api, imageSrc, money, roundMoney, type Accessory, type AdminBundle, type Body, type CategorySchema, type PricingSettings } from '../../api'
+import { api, imageSrc, money, type Accessory, type AdminBundle, type Body, type CategorySchema } from '../../api'
 import { confirmDialog } from '../../ui/confirm'
 import { toast } from '../../ui/toast'
 import AppModal from '../AppModal.vue'
@@ -11,7 +11,6 @@ const props = defineProps<{
   bundles: AdminBundle[]
   bodies: Body[]
   accessories: Accessory[]
-  settings: PricingSettings
   schema: CategorySchema[]
 }>()
 const emit = defineEmits<{ (event: 'changed'): void }>()
@@ -120,9 +119,8 @@ const estimate = computed(() => {
     const accessory = accessoryById.value.get(item.accessory_id)
     return total + Number(accessory?.cost || 0) * Number(item.quantity || 0)
   }, 0)
-  const subtotal = Number(body?.cost || 0) + accessoryTotal + Number(props.settings.labor_fee || 0)
-  const final = subtotal * Number(props.settings.multiplier || 1)
-  return { body: Number(body?.cost || 0), accessoryTotal, subtotal, final }
+  const subtotal = Number(body?.cost || 0) + accessoryTotal
+  return { body: Number(body?.cost || 0), accessoryTotal, subtotal }
 })
 
 function openCreate() {
@@ -389,9 +387,9 @@ async function remove(bundle: AdminBundle) {
 
         <div class="editor-total">
           <span>
-            主体 ¥{{ money(estimate.body) }} · 配件 ¥{{ money(estimate.accessoryTotal) }} · 人工 ¥{{ money(settings.labor_fee) }}
+            主体 ¥{{ money(estimate.body) }} · 配件 ¥{{ money(estimate.accessoryTotal) }}
           </span>
-          <span>单套预估售价 <b>¥ {{ roundMoney(estimate.final) }}</b></span>
+          <span>物料成本合计 <b>¥ {{ money(estimate.subtotal) }}</b></span>
         </div>
       </div>
 

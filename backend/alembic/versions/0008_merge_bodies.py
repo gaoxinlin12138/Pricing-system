@@ -26,6 +26,9 @@ def upgrade():
     accessories = sa.Table("accessories", meta, autoload_with=bind)
     bundles = sa.Table("bundles", meta, autoload_with=bind)
     quotes = sa.Table("quotes", meta, autoload_with=bind)
+    # 某些旧库曾经给 accessories 增加过 required 非空字段，
+    # 但当前模型已经移除它。迁移插入主体时先兼容旧列，完成合并后再清理。
+    has_legacy_required = "required" in columns
 
     # 旧库的 accessories 自增序列可能落后于 MAX(id)（历史上用显式 id 导入过数据）。
     # 不先校准的话，下面插入主体会从 1 开始，直接撞 accessories_pkey。
@@ -51,9 +54,7 @@ def upgrade():
         if existing_id:
             mapping[row["id"]] = existing_id
             continue
-        mapping[row["id"]] = bind.execute(
-            accessories.insert()
-            .values(
+        values = dict(
                 name=row["name"],
                 model=row["model"],
                 category=BODY_CATEGORY,
@@ -68,7 +69,10 @@ def upgrade():
                 version=row["version"],
                 updated_at=row["updated_at"],
             )
-            .returning(accessories.c.id)
+        if has_legacy_required:
+            values["required"] = True
+        mapping[row["id"]] = bind.execute(
+            accessories.insert().values(**values).returning(accessories.c.id)
         ).scalar_one()
 
     # 旧外键指向 bodies，必须先解除，才能把 body_id 改写成新配件 id。
@@ -98,6 +102,9 @@ def upgrade():
             ["id"],
             ondelete="RESTRICT",
         )
+
+    if has_legacy_required:
+        op.drop_column("accessories", "required")
 
 
 def downgrade():

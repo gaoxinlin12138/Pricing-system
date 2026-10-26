@@ -20,6 +20,23 @@ def admin_client() -> TestClient:
     return client
 
 
+def test_admin_routes_require_authentication():
+    with TestClient(app) as client:
+        assert client.get("/api/admin/users").status_code == 401
+        assert client.post("/api/auth/login", json={"username": "employee", "password": "employee123"}).status_code == 200
+        assert client.get("/api/admin/users").status_code == 403
+
+
+def test_logout_revokes_server_session():
+    with TestClient(app) as client:
+        response = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+        assert response.status_code == 200
+        stale_cookie = response.cookies.get("shower_session")
+        assert stale_cookie
+        assert client.post("/api/auth/logout").status_code == 200
+        assert client.get("/api/admin/users", cookies={"shower_session": stale_cookie}).status_code == 401
+
+
 def catalog_for_quote(client: TestClient) -> tuple[int, int]:
     body = client.post(
         "/api/admin/accessories",
@@ -66,13 +83,10 @@ def test_employee_cannot_see_costs():
 def test_quote_snapshot_is_publicly_safe():
     with TestClient(app) as client:
         client.post("/api/auth/login", json={"username": "employee", "password": "employee123"})
-        body = client.get("/api/catalog/bodies").json()[0]
-        accessories = client.get("/api/catalog/accessories").json()
-        if not accessories:
-            admin = admin_client()
-            _, accessory_id = catalog_for_quote(admin)
-            accessories = [{"id": accessory_id}]
-        payload = {"body_id": body["id"], "lines": [{"accessory_id": accessories[0]["id"], "quantity": 1}]}
+        admin = admin_client()
+        body_id, accessory_id = catalog_for_quote(admin)
+        bundle = admin.post("/api/admin/bundles", json={"name":"安全快照套装","description":"","body_id":body_id,"active":True,"items":[{"accessory_id":accessory_id,"quantity":1,"position":1}]}).json()
+        payload = {"bundle_id": bundle["id"], "lines": [{"bundle_item_id": bundle["items"][0]["id"], "accessory_id": accessory_id, "quantity": 1}]}
         created = client.post("/api/quotes", json=payload).json()
         detail = client.get(f"/api/quotes/{created['quote_no']}").json()
         assert "private" not in detail
@@ -91,7 +105,8 @@ def test_hard_delete_user_preserves_quote_and_audit_snapshots():
 
     employee = TestClient(app)
     assert employee.post("/api/auth/login", json={"username": "delete-me", "password": "delete-me123"}).status_code == 200
-    quote = employee.post("/api/quotes", json={"body_id": body_id, "lines": [{"accessory_id": accessory_id, "quantity": 1}]}).json()
+    bundle = admin.post("/api/admin/bundles", json={"name":"删除账号套装","description":"","body_id":body_id,"active":True,"items":[{"accessory_id":accessory_id,"quantity":1,"position":1}]}).json()
+    quote = employee.post("/api/quotes", json={"bundle_id": bundle["id"], "lines": [{"bundle_item_id": bundle["items"][0]["id"], "accessory_id": accessory_id, "quantity": 1}]}).json()
 
     deleted = admin.delete(f"/api/admin/users/{user_id}")
     assert deleted.status_code == 200
@@ -146,6 +161,103 @@ def test_current_admin_cannot_be_deleted():
     response = admin.delete(f"/api/admin/users/{current['id']}")
     assert response.status_code == 400
     assert response.json()["message"] == "不能删除当前登录账号"
+    deactivate = admin.patch(
+        f"/api/admin/users/{current['id']}",
+        json={"username": "admin", "password": None, "role": "admin", "active": False},
+    )
+    assert deactivate.status_code == 400
+    assert deactivate.json()["message"] == "不能停用当前登录账号"
+
+
+def test_employee_cannot_create_legacy_freeform_quote():
+    admin = admin_client()
+    body_id, accessory_id = catalog_for_quote(admin)
+    employee = TestClient(app)
+    assert employee.post("/api/auth/login", json={"username": "employee", "password": "employee123"}).status_code == 200
+    response = employee.post("/api/quotes", json={"body_id": body_id, "lines": [{"accessory_id": accessory_id, "quantity": 1}]})
+    assert response.status_code == 403
+
+
+def test_employee_can_replace_bundle_body_but_quantity_stays_one():
+    admin = admin_client()
+    body_id, accessory_id = catalog_for_quote(admin)
+    second_body = admin.post(
+        "/api/admin/accessories",
+        json={
+            "name": "替换主体",
+            "model": "TEST-BODY-2",
+            "category": "主体",
+            "description": "",
+            "attributes": {},
+            "cost": 120,
+            "default_qty": 1,
+            "min_qty": 1,
+            "max_qty": 1,
+            "active": True,
+        },
+    ).json()
+    bundle = admin.post(
+        "/api/admin/bundles",
+        json={
+            "name": "主体可替换套装",
+            "description": "",
+            "body_id": body_id,
+            "active": True,
+            "items": [{"accessory_id": accessory_id, "quantity": 1, "position": 1}],
+        },
+    ).json()
+    employee = TestClient(app)
+    assert employee.post("/api/auth/login", json={"username": "employee", "password": "employee123"}).status_code == 200
+    detail = employee.get(f"/api/catalog/bundles/{bundle['id']}").json()
+    assert second_body["id"] in [row["id"] for row in detail["replacement_candidates"]["主体"]]
+
+    payload = {
+        "bundle_id": bundle["id"],
+        "body_id": second_body["id"],
+        "lines": [{"bundle_item_id": bundle["items"][0]["id"], "accessory_id": accessory_id, "quantity": 1}],
+        "set_quantity": 1,
+    }
+    quote = employee.post("/api/quotes", json=payload)
+    assert quote.status_code == 200
+    saved = employee.get(f"/api/quotes/{quote.json()['quote_no']}").json()
+    assert saved["body"]["id"] == second_body["id"]
+    assert saved["replacements"][0]["category"] == "主体"
+    assert saved["replacements"][0]["original_accessory_id"] == body_id
+    assert saved["replacements"][0]["replacement_accessory_id"] == second_body["id"]
+    assert employee.get(f"/api/catalog/bundles/{bundle['id']}").json()["body"]["id"] == body_id
+    duplicated = employee.post(f"/api/quotes/{quote.json()['quote_no']}/duplicate")
+    assert duplicated.status_code == 200
+    assert duplicated.json()["body"]["id"] == second_body["id"]
+
+
+def test_admin_role_invariant_and_quantity_range_guard():
+    admin = admin_client()
+    current = next(row for row in admin.get("/api/admin/users").json() if row["username"] == "admin")
+    demote_self = admin.patch(f"/api/admin/users/{current['id']}", json={"username": "admin", "password": None, "role": "employee", "active": True})
+    assert demote_self.status_code == 400
+
+    body_id, accessory_id = catalog_for_quote(admin)
+    bundle = admin.post("/api/admin/bundles", json={"name":"数量范围保护","description":"","body_id":body_id,"active":True,"items":[{"accessory_id":accessory_id,"quantity":1,"position":1}]}).json()
+    response = admin.patch(f"/api/admin/accessories/{accessory_id}", json={"name":"测试配件","model":"TEST-ACC","category":"花洒喷头","attributes":{},"cost":10,"default_qty":1,"min_qty":2,"max_qty":2,"active":True})
+    assert response.status_code == 409
+    assert bundle["id"] in [row["id"] for row in admin.get("/api/admin/bundles").json()]
+
+
+def test_blank_catalog_names_and_models_are_rejected():
+    admin = admin_client()
+    for field in ("name", "model"):
+        payload = {
+            "name": "正常名称",
+            "model": "NORMAL-MODEL",
+            "category": "主体",
+            "cost": 1,
+            "default_qty": 1,
+            "min_qty": 1,
+            "max_qty": 1,
+            "active": True,
+        }
+        payload[field] = "   "
+        assert admin.post("/api/admin/accessories", json=payload).status_code == 422
 
 
 def test_bundle_cover_image_survives_orphan_cleanup():
@@ -200,9 +312,10 @@ def test_quote_price_uses_accessory_and_set_quantity():
     body_id, accessory_id = catalog_for_quote(admin)
     employee = TestClient(app)
     assert employee.post("/api/auth/login", json={"username": "employee", "password": "employee123"}).status_code == 200
+    bundle = admin.post("/api/admin/bundles", json={"name":"数量测试套装","description":"","body_id":body_id,"active":True,"items":[{"accessory_id":accessory_id,"quantity":1,"position":1}]}).json()
     quote = employee.post(
         "/api/quotes",
-        json={"body_id": body_id, "lines": [{"accessory_id": accessory_id, "quantity": 2}], "set_quantity": 2},
+        json={"bundle_id": bundle["id"], "lines": [{"bundle_item_id": bundle["items"][0]["id"], "accessory_id": accessory_id, "quantity": 2}], "set_quantity": 2},
     ).json()
     # 配件总成本 = 单件 10 × 数量 2 = 20；单套 = (100 + 20 + 80) × 1.5 = 300；2 套总计 600
     assert quote["set_quantity"] == 2

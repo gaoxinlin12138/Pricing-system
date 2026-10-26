@@ -42,7 +42,7 @@ async function save() {
       <div>
         <p class="eyebrow">PRICING SETTINGS</p>
         <h1 class="page-title">统一计价参数</h1>
-        <p class="page-sub">所有套装共用同一套参数，员工端只看到最终售价。</p>
+        <p class="page-sub">这里保存员工端的默认值；员工可在每次选择套装和调整配件后，单独修改本次报价的倍率与人工费。</p>
       </div>
       <button class="btn btn-primary" :disabled="busy" @click="save">
         <span v-if="busy" class="spinner"></span>{{ busy ? '保存中…' : '保存变更' }}
@@ -52,8 +52,8 @@ async function save() {
     <div class="card">
       <div class="card-body">
         <div class="settings-grid">
-          <label class="field"><span>统一倍率</span><input v-model="form.multiplier" class="input" type="number" min="1" step="0.01" /></label>
-          <label class="field"><span>统一人工费（元）</span><input v-model="form.labor_fee" class="input" type="number" min="0" step="1" /></label>
+          <label class="field"><span>默认倍率</span><input v-model="form.multiplier" class="input" type="number" min="1" step="0.01" /></label>
+          <label class="field"><span>默认人工费（元）</span><input v-model="form.labor_fee" class="input" type="number" min="0" step="1" /></label>
           <label class="field"><span>报价有效期（天）</span><input v-model="form.quote_valid_days" class="input" type="number" min="1" step="1" /></label>
         </div>
 

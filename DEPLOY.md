@@ -86,7 +86,8 @@ nano .env
 ```env
 POSTGRES_PASSWORD=<长密码，建议只用字母数字>
 SESSION_SECRET=<上面生成的 64 位十六进制>
-COOKIE_SECURE=false           # 先 false，配好 HTTPS 再改 true
+COOKIE_SECURE=true            # 生产环境必须通过 HTTPS
+APP_ENV=production
 INITIAL_ADMIN_PASSWORD=<管理员初始密码>
 INITIAL_EMPLOYEE_PASSWORD=<员工初始密码>
 ```
@@ -129,11 +130,10 @@ sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d 你的域名
 ```
 
-证书生效后，把 `.env` 的 `COOKIE_SECURE` 改成 `true`，重启后端：
+证书配置完成后，确认 `.env` 中 `COOKIE_SECURE=true`，再重启后端：
 
 ```bash
 cd /opt/pricing
-sed -i 's/^COOKIE_SECURE=.*/COOKIE_SECURE=true/' .env
 docker compose up -d backend
 ```
 
@@ -142,7 +142,7 @@ docker compose up -d backend
 ## 7. 上线后立刻做的事
 
 1. 用 `admin` + `INITIAL_ADMIN_PASSWORD` 登录，进「账号」把密码改成新的强密码，删掉或停用演示用的 `employee` 账号（或改密码给员工用）；
-2. 「计价参数」核对倍率、人工费、报价有效期；
+2. 进入「报价」设置报价有效期，并确认员工报价时会按当前套装输入倍率和人工费；
 3. 建一个真实的套装并上传成品图，用员工账号走一遍搜索 → 替换 → 确认 → 保存；
 4. 确认备份任务已配（第 9 节）。
 
@@ -337,8 +337,9 @@ mkdir -p /etc/pricing /www/wwwroot/pricing/backend/uploads
 
 cat > /etc/pricing/pricing.env <<EOF
 DATABASE_URL=postgresql+psycopg://pricing:$DB_PASS@127.0.0.1:5432/pricing
+APP_ENV=production
 SESSION_SECRET=$(openssl rand -hex 32)
-COOKIE_SECURE=false
+COOKIE_SECURE=true
 UPLOAD_DIR=/www/wwwroot/pricing/backend/uploads
 INITIAL_ADMIN_PASSWORD=$(openssl rand -hex 8)
 INITIAL_EMPLOYEE_PASSWORD=$(openssl rand -hex 8)
@@ -382,10 +383,10 @@ EOF
 systemctl daemon-reload
 systemctl enable --now pricing
 systemctl status pricing --no-pager
-curl -I http://127.0.0.1:8001/openapi.json
+curl -I http://127.0.0.1:8001/api/auth/me
 ```
 
-`curl` 返回 200、`systemctl status` 是 `active (running)` 就成功了。看日志：`journalctl -u pricing -f`。
+`curl` 返回 401、`systemctl status` 是 `active (running)` 就说明后端已启动且接口受到登录保护。生产环境不会开放 `/docs` 和 `/openapi.json`。看日志：`journalctl -u pricing -f`。
 
 ### 14.7 宝塔站点：静态 + 反向代理
 
@@ -439,7 +440,7 @@ tar xzf /www/backup/uploads-2026-10-22.tgz -C /www/wwwroot/pricing/backend
 |---|---|
 | `systemctl status` 里 exit 1 | `journalctl -u pricing -n 80` 看 Python 报错，多半是 DATABASE_URL 或依赖没装全 |
 | 日志里 `address already in use`（8001） | 8001 被别的服务（比如机器人后端）占用：换 8011，改 systemd 的 `--port 8011` 和 Nginx 两处 `proxy_pass`，`systemctl daemon-reload && systemctl restart pricing`、`nginx -t && nginx -s reload` |
-| 502 Bad Gateway | 后端没起来或端口不是 8001，`curl -I 127.0.0.1:8001/openapi.json` 验证 |
+| 502 Bad Gateway | 后端没起来或端口不是 8001，`curl -I 127.0.0.1:8001/api/auth/me` 验证 |
 | 页面能开、接口 404 | 宝塔只配了静态没配 `/api` 反代，或反代路径写成了 `/api/` 与 `/api` 不一致 |
 | 登录后立刻变回登录页 | `COOKIE_SECURE` 与访问协议不一致 |
 | 图片 403/404 | `backend/uploads` 权限不是 `www:www`，或 `/uploads` 反代没配 |

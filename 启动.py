@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -149,7 +150,9 @@ def normalize_database_url(value: str) -> str:
 
 
 def apply_common_environment(env: dict[str, str]) -> dict[str, str]:
-    env.setdefault("SESSION_SECRET", "local-development-change-me")
+    # 未配置时为当前进程生成随机密钥，绝不使用源码中的固定密钥。
+    if not env.get("SESSION_SECRET", "").strip():
+        env["SESSION_SECRET"] = secrets.token_urlsafe(32)
     env.setdefault("COOKIE_SECURE", "false")
 
     upload_dir = Path(env.get("UPLOAD_DIR") or BACKEND / "uploads")
@@ -349,7 +352,7 @@ def main() -> None:
         backend = start_backend(env, python_command, backend_port)
         wait_for_url(
             backend,
-            f"http://{BACKEND_HOST}:{backend_port}/openapi.json",
+            f"http://{BACKEND_HOST}:{backend_port}/api/auth/me",
             "后端",
             timeout=20,
         )
@@ -363,7 +366,10 @@ def main() -> None:
 
         print("\n项目已启动：")
         print(f"网页地址：http://{BACKEND_HOST}:{frontend_port}/")
-        print(f"后端文档：http://{BACKEND_HOST}:{backend_port}/docs")
+        if env.get("APP_ENV", "").strip().lower() in {"production", "prod"}:
+            print("后端生产文档已关闭。")
+        else:
+            print(f"后端文档：http://{BACKEND_HOST}:{backend_port}/docs")
         print("保持此窗口打开；按 Ctrl+C 可停止全部服务。\n")
 
         while True:

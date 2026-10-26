@@ -8,7 +8,7 @@ import {
   type AuditLog,
   type Body,
   type CategorySchema,
-  type PricingSettings,
+  type QuoteSettings,
   type QuoteSummary,
 } from '../api'
 import { toast } from '../ui/toast'
@@ -17,12 +17,11 @@ import BundlesPanel from './admin/BundlesPanel.vue'
 import LogsPanel from './admin/LogsPanel.vue'
 import OverviewPanel from './admin/OverviewPanel.vue'
 import QuotesPanel from './admin/QuotesPanel.vue'
-import SettingsPanel from './admin/SettingsPanel.vue'
 import UsersPanel from './admin/UsersPanel.vue'
 
 defineProps<{ username: string }>()
 
-const tabs = ['概览', '计价参数', '配件', '套装', '账号', '报价', '日志']
+const tabs = ['概览', '配件', '套装', '账号', '报价', '日志']
 
 const tab = ref('概览')
 const loading = ref(true)
@@ -36,16 +35,12 @@ const quoteRows = ref<QuoteSummary[]>([])
 const users = ref<AdminUser[]>([])
 const logs = ref<AuditLog[]>([])
 const schema = ref<CategorySchema[]>([])
-const settings = ref<PricingSettings>({
-  multiplier: '1.5',
-  labor_fee: '0',
-  quote_valid_days: 15,
-})
+const quoteSettings = ref<QuoteSettings>({ quote_valid_days: 15 })
 
 async function load() {
   try {
-    const [settingsRow, accessoryRows, bundleRows, quoteList, userRows, logRows, schemaRows] = await Promise.all([
-      api<PricingSettings>('/api/admin/pricing-settings'),
+    const [quoteSettingsRow, accessoryRows, bundleRows, quoteList, userRows, logRows, schemaRows] = await Promise.all([
+      api<QuoteSettings>('/api/admin/quote-settings'),
       api<Accessory[]>('/api/admin/accessories'),
       api<AdminBundle[]>('/api/admin/bundles'),
       api<QuoteSummary[]>('/api/admin/quotes'),
@@ -53,7 +48,7 @@ async function load() {
       api<AuditLog[]>('/api/admin/audit-logs'),
       api<CategorySchema[]>('/api/catalog/accessory-schema'),
     ])
-    settings.value = settingsRow
+    quoteSettings.value = quoteSettingsRow
     accessories.value = accessoryRows
     bundles.value = bundleRows
     quoteRows.value = quoteList
@@ -107,11 +102,10 @@ onMounted(load)
           :user-count="users.length"
           @navigate="tab = $event"
         />
-        <SettingsPanel v-else-if="tab === '计价参数'" :settings="settings" @changed="refresh" />
         <AccessoriesPanel v-else-if="tab === '配件'" :accessories="accessories" :schema="schema" @changed="refresh" />
-        <BundlesPanel v-else-if="tab === '套装'" :bundles="bundles" :bodies="bodies" :accessories="accessories" :settings="settings" :schema="schema" @changed="refresh" />
+        <BundlesPanel v-else-if="tab === '套装'" :bundles="bundles" :bodies="bodies" :accessories="accessories" :schema="schema" @changed="refresh" />
         <UsersPanel v-else-if="tab === '账号'" :users="users" :current-user="username" @changed="refresh" />
-        <QuotesPanel v-else-if="tab === '报价'" :quotes="quoteRows" @changed="refresh" />
+        <QuotesPanel v-else-if="tab === '报价'" :quotes="quoteRows" :quote-valid-days="quoteSettings.quote_valid_days" @changed="refresh" />
         <LogsPanel v-else :logs="logs" />
       </template>
     </main>

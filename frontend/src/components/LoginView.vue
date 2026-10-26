@@ -33,7 +33,7 @@ async function submit() {
         <p class="eyebrow">SHOWER / PRICING STUDIO</p>
         <div class="login-hero">
           <h1>让每一套<br />花洒组合<br />都有清晰答案。</h1>
-          <p>内部报价工作台。管理员维护主体、配件与预设套装，员工按客户需求替换配件，系统统一核算对外售价。</p>
+        <p>内部报价工作台。管理员维护主体、配件与预设套装，员工按客户需求替换主体或配件，系统统一核算对外售价。</p>
         </div>
       </div>
       <div class="login-foot">
