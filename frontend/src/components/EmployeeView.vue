@@ -23,6 +23,15 @@ const bundles = ref<BundleSummary[]>([])
 const quotes = ref<QuoteSummary[]>([])
 const loading = ref(true)
 const query = ref('')
+const brokenImages = reactive(new Set<string>())
+
+function imageUsable(url?: string) {
+  return !!url && !brokenImages.has(url)
+}
+
+function markImageBroken(url?: string) {
+  if (url) brokenImages.add(url)
+}
 const step = ref(1)
 /** 第二步点击「确认报价」后才允许进入第三步并试算。 */
 const confirmed = ref(false)
@@ -461,7 +470,7 @@ onBeforeUnmount(() => {
             <div v-else-if="filteredBundles.length" class="bundle-grid">
               <button v-for="bundle in filteredBundles" :key="bundle.id" class="bundle-card" @click="openBundle(bundle)">
                 <span class="bundle-media">
-                  <img v-if="bundle.image_url" :src="imageSrc(bundle.image_url)" :alt="bundle.name" />
+                  <img v-if="imageUsable(bundle.image_url)" :src="imageSrc(bundle.image_url)" :alt="bundle.name" @error="markImageBroken(bundle.image_url)" />
                   <span v-else class="bundle-media-empty">✦</span>
                   <span class="bundle-count">{{ bundle.item_count }} 个配件</span>
                 </span>
@@ -501,7 +510,7 @@ onBeforeUnmount(() => {
                 :title="selected.image_url ? '点击查看大图' : '暂无套装成品图'"
                 @click="openImage(selected.image_url, selected.name, selected.code ? `套装成品图 · ${selected.code}` : '套装成品图')"
               >
-                <img v-if="selected.image_url" :src="imageSrc(selected.image_url)" :alt="selected.name" />
+                <img v-if="imageUsable(selected.image_url)" :src="imageSrc(selected.image_url)" :alt="selected.name" @error="markImageBroken(selected.image_url)" />
                 <span v-else class="hero-empty">
                   <span>✦</span>
                   <small>暂无套装成品图</small>
@@ -530,7 +539,7 @@ onBeforeUnmount(() => {
                   :title="bodyAccessory?.image_url ? '点击查看大图' : '暂无图片'"
                   @click="openImage(bodyAccessory?.image_url, bodyAccessory?.name || '主体', bodyAccessory?.model)"
                 >
-                  <img v-if="bodyAccessory?.image_url" :src="imageSrc(bodyAccessory.image_url)" :alt="bodyAccessory?.name" />
+                  <img v-if="imageUsable(bodyAccessory?.image_url)" :src="imageSrc(bodyAccessory!.image_url)" :alt="bodyAccessory?.name" @error="markImageBroken(bodyAccessory?.image_url)" />
                   <span v-else>◈</span>
                 </button>
                 <div class="item-info">
@@ -552,7 +561,7 @@ onBeforeUnmount(() => {
                   :title="line.accessory.image_url ? '点击查看大图' : '暂无图片'"
                   @click="openImage(line.accessory.image_url, line.accessory.name, `${line.accessory.category} · ${line.accessory.model}`)"
                 >
-                  <img v-if="line.accessory.image_url" :src="imageSrc(line.accessory.image_url)" :alt="line.accessory.name" />
+                  <img v-if="imageUsable(line.accessory.image_url)" :src="imageSrc(line.accessory.image_url)" :alt="line.accessory.name" @error="markImageBroken(line.accessory.image_url)" />
                   <span v-else>✧</span>
                 </button>
                 <div class="item-info">
@@ -604,7 +613,7 @@ onBeforeUnmount(() => {
                   :title="bodyAccessory?.image_url ? '点击查看大图' : '暂无图片'"
                   @click="openImage(bodyAccessory?.image_url, bodyAccessory?.name || '主体', bodyAccessory?.model)"
                 >
-                  <img v-if="bodyAccessory?.image_url" :src="imageSrc(bodyAccessory.image_url)" :alt="bodyAccessory?.name" />
+                  <img v-if="imageUsable(bodyAccessory?.image_url)" :src="imageSrc(bodyAccessory!.image_url)" :alt="bodyAccessory?.name" @error="markImageBroken(bodyAccessory?.image_url)" />
                   <span v-else>◈</span>
                 </button>
                 <div class="item-info">
@@ -624,7 +633,7 @@ onBeforeUnmount(() => {
                   :title="line.accessory.image_url ? '点击查看大图' : '暂无图片'"
                   @click="openImage(line.accessory.image_url, line.accessory.name, `${line.accessory.category} · ${line.accessory.model}`)"
                 >
-                  <img v-if="line.accessory.image_url" :src="imageSrc(line.accessory.image_url)" :alt="line.accessory.name" />
+                  <img v-if="imageUsable(line.accessory.image_url)" :src="imageSrc(line.accessory.image_url)" :alt="line.accessory.name" @error="markImageBroken(line.accessory.image_url)" />
                   <span v-else>✧</span>
                 </button>
                 <div class="item-info">
@@ -777,7 +786,7 @@ onBeforeUnmount(() => {
         >
           <span class="product">
             <span class="thumb">
-              <img v-if="option.image_url" :src="imageSrc(option.image_url)" :alt="option.name" />
+              <img v-if="imageUsable(option.image_url)" :src="imageSrc(option.image_url)" :alt="option.name" @error="markImageBroken(option.image_url)" />
               <span v-else>✧</span>
             </span>
             <span class="product-main">

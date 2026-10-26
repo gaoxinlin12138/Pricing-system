@@ -50,8 +50,31 @@ body {
   font-size: 14px;
   line-height: 1.6;
   color: var(--ink);
-  background: var(--bg);
+  background:
+    radial-gradient(1100px 620px at 72% 100%, rgba(65, 187, 200, 0.07), transparent 72%),
+    linear-gradient(180deg, #fcf9e8 0%, #fbf7e7 100%);
   -webkit-font-smoothing: antialiased;
+}
+
+#app { position: relative; isolation: isolate; }
+.app-layer { position: relative; z-index: 1; min-height: 100%; }
+
+/* 页面底部的层叠山水：低对比度，只做空间层次，不抢正文。 */
+.app-scenery {
+  position: fixed;
+  inset: auto 0 0;
+  z-index: 0;
+  height: min(52vh, 520px);
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0.92;
+  -webkit-mask-image: linear-gradient(to top, #000 0%, #000 48%, transparent 100%);
+  mask-image: linear-gradient(to top, #000 0%, #000 48%, transparent 100%);
+}
+.app-scenery svg { display: block; width: 100%; height: 100%; }
+
+@media (max-width: 640px) {
+  .app-scenery { height: 44vh; opacity: 0.82; }
 }
 
 h1, h2, h3, h4 { margin: 0; font-weight: 650; line-height: 1.35; }
