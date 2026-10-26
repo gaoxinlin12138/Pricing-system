@@ -238,7 +238,7 @@ def test_admin_role_invariant_and_quantity_range_guard():
 
     body_id, accessory_id = catalog_for_quote(admin)
     bundle = admin.post("/api/admin/bundles", json={"name":"数量范围保护","description":"","body_id":body_id,"active":True,"items":[{"accessory_id":accessory_id,"quantity":1,"position":1}]}).json()
-    response = admin.patch(f"/api/admin/accessories/{accessory_id}", json={"name":"测试配件","model":"TEST-ACC","category":"花洒喷头","attributes":{},"cost":10,"default_qty":1,"min_qty":2,"max_qty":2,"active":True})
+    response = admin.patch(f"/api/admin/accessories/{accessory_id}", json={"name":"测试配件","model":"TEST-ACC","category":"花洒喷头","attributes":{},"cost":10,"default_qty":2,"min_qty":2,"max_qty":2,"active":True})
     assert response.status_code == 409
     assert bundle["id"] in [row["id"] for row in admin.get("/api/admin/bundles").json()]
 
@@ -305,6 +305,13 @@ def test_shared_upload_is_removed_only_after_last_reference():
     assert image.exists()
     assert admin.delete(f"/api/admin/accessories/{second['id']}").status_code == 200
     assert not image.exists()
+
+
+def test_health_endpoint_is_public():
+    client = TestClient(app)
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
 
 
 def test_quote_price_uses_accessory_and_set_quantity():

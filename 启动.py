@@ -352,7 +352,7 @@ def main() -> None:
         backend = start_backend(env, python_command, backend_port)
         wait_for_url(
             backend,
-            f"http://{BACKEND_HOST}:{backend_port}/api/auth/me",
+            f"http://{BACKEND_HOST}:{backend_port}/api/health",
             "后端",
             timeout=20,
         )

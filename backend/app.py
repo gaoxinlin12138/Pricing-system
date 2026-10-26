@@ -722,6 +722,10 @@ def logout(response: Response, session: str | None = Cookie(default=None, alias=
     audit(db,user,"logout","session",str(user.id),{"role":user.role}); db.commit(); response.delete_cookie("shower_session"); return {"ok": True}
 
 
+@app.get("/api/health")
+def health(): return {"ok": True}
+
+
 @app.get("/api/auth/me")
 def me(user: User = Depends(current_user)): return {"username": user.username, "role": user.role}
 
